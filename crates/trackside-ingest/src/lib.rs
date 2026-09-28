@@ -93,7 +93,7 @@ pub fn form_from_json(json: &str, trainer: &str) -> Result<HorseForm> {
             })
         })
         .collect();
-    starts.sort_by(|a, b| b.date.cmp(&a.date));
+    starts.sort_by_key(|s| std::cmp::Reverse(s.date));
     Ok(HorseForm {
         horse: clean_horse(&f.horse),
         trainer: trainer.trim().to_string(),
