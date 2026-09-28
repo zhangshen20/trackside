@@ -8,4 +8,4 @@ pub mod model;
 pub mod store;
 
 pub use model::*;
-pub use store::{FixtureStore, Store};
+pub use store::{norm, venue_matches, Fixture, FixtureStore, Store};

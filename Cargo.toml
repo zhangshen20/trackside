@@ -21,6 +21,14 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 axum = { version = "0.8", features = ["macros"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
+futures = "0.3"
+csv = "1"
+flate2 = "1"
+chrono-tz = "0.10"
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-s3 = "1"
+aws-sdk-sts = "1"
+lambda_http = "1"
 rmcp = { version = "3.5", features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
 
 [profile.release]

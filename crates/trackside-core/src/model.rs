@@ -5,6 +5,51 @@ use serde::{Deserialize, Serialize};
 pub const SOURCE_RACING_AUSTRALIA: &str = "Racing Australia";
 pub const SOURCE_SECTIONALS: &str = "state racing bodies and racing.com sectional timing";
 
+/// Wagering brands that sponsor races and venues. Trackside never names them: "Sportsbet
+/// Longreach" is Longreach and the "TAB Handicap" is a handicap.
+pub const BOOKMAKER_BRANDS: &[&str] = &[
+    "sportsbet",
+    "ladbrokes",
+    "tab",
+    "tabtouch",
+    "neds",
+    "pointsbet",
+    "bet365",
+    "betfair",
+    "unibet",
+    "betr",
+    "bluebet",
+    "palmerbet",
+    "picklebet",
+    "topsport",
+    "dabble",
+    "boombet",
+    "betdeluxe",
+    "betright",
+    "elitebet",
+    "betestate",
+    "tabcorp",
+];
+
+/// Remove wagering brands from a race, venue or class name, keeping the rest as written.
+/// Horse and people's names are never passed through this.
+pub fn without_bookmakers(s: &str) -> String {
+    let kept: Vec<&str> = s
+        .split_whitespace()
+        .filter(|w| {
+            let bare: String = w
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .collect::<String>()
+                .to_ascii_lowercase();
+            !BOOKMAKER_BRANDS.contains(&bare.as_str())
+        })
+        .collect();
+    kept.join(" ")
+        .trim_matches(|c: char| c == '-' || c == ',' || c.is_whitespace())
+        .to_string()
+}
+
 /// A race meeting on one day at one venue.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -182,4 +227,24 @@ pub fn spring_carnival_2026() -> Vec<FeatureRace> {
         FeatureRace { name: "VRC Oaks", date: d(2026, 11, 5), venue: "Flemington", grade: "Group 1", distance_m: 2500, blurb: "The fillies' classic on Oaks Day." },
         FeatureRace { name: "Champions Stakes", date: d(2026, 11, 7), venue: "Flemington", grade: "Group 1", distance_m: 2000, blurb: "The weight-for-age feature that closes the Flemington carnival." },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bookmaker_brands_are_removed_from_names() {
+        assert_eq!(without_bookmakers("SPORTSBET LONGREACH"), "LONGREACH");
+        assert_eq!(without_bookmakers("TAB HANDICAP"), "HANDICAP");
+        assert_eq!(
+            without_bookmakers("Ladbrokes - Fast Form Plate"),
+            "Fast Form Plate"
+        );
+        assert_eq!(
+            without_bookmakers("Bonus on prizemoney pools for TAB races."),
+            "Bonus on prizemoney pools for races."
+        );
+        assert_eq!(without_bookmakers("Tableland Cup"), "Tableland Cup");
+    }
 }

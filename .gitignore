@@ -3,3 +3,5 @@
 .env
 *.local.toml
 /data
+snapshot*.json
+snapshot*.json.gz

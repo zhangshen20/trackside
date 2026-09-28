@@ -6,6 +6,8 @@
 //! only the fields Trackside needs; unknown fields, including every price field, are ignored
 //! by serde and never reach the model.
 
+pub mod archive;
+pub mod snapshot;
 pub mod wire;
 
 use anyhow::{Context, Result};
@@ -23,11 +25,11 @@ pub fn meeting_from_fields(json: &str) -> Result<Meeting> {
         .iter()
         .map(|r| RaceCard {
             race_number: r.race_number.max(0) as u32,
-            name: r.race_name.trim().to_string(),
+            name: without_bookmakers(&r.race_name),
             start_local: r.start_local.trim().to_string(),
             distance_m: r.distance_m.and_then(|d| u32::try_from(d).ok()),
-            class: r.conditions.trim().to_string(),
-            prize: r.prize.trim().to_string(),
+            class: without_bookmakers(&r.conditions),
+            prize: without_bookmakers(&r.prize),
             grade: grade_from(&r.race_name, &r.conditions),
             runners: r
                 .runners
@@ -35,7 +37,7 @@ pub fn meeting_from_fields(json: &str) -> Result<Meeting> {
                 .map(|x| Runner {
                     number: x.number.unwrap_or(0).max(0) as u32,
                     horse: clean_horse(&x.horse),
-                    jockey: x.jockey.trim().to_string(),
+                    jockey: clean_person(&x.jockey),
                     trainer: x.trainer.trim().to_string(),
                     barrier: x.barrier.and_then(|b| u32::try_from(b).ok()),
                     weight_kg: x.weight_kg,
@@ -49,7 +51,7 @@ pub fn meeting_from_fields(json: &str) -> Result<Meeting> {
     Ok(Meeting {
         date,
         state: f.state.trim().to_string(),
-        venue: title_case(&f.venue),
+        venue: title_case(&without_bookmakers(&f.venue)),
         track_condition: None,
         rail: None,
         weather: None,
@@ -74,14 +76,14 @@ pub fn form_from_json(json: &str, trainer: &str) -> Result<HorseForm> {
             let date = parse_ra_date(&s.date)?;
             Some(PastStart {
                 date,
-                venue: s.track.trim().to_string(),
+                venue: without_bookmakers(&s.track),
                 distance_m: s.distance_m.and_then(|d| u32::try_from(d).ok()),
                 condition: split_condition(&s.condition),
-                class: s.class.trim().to_string(),
+                class: without_bookmakers(&s.class),
                 finish: s.finish.and_then(|v| u32::try_from(v).ok()),
                 starters: s.starters.and_then(|v| u32::try_from(v).ok()),
                 margin_lengths: s.margin_l,
-                jockey: s.jockey.trim().to_string(),
+                jockey: clean_person(&s.jockey),
                 weight_kg: s.carried_kg.or(s.weight_kg),
                 barrier: s.barrier.and_then(|v| u32::try_from(v).ok()),
                 time: s.time.clone(),
@@ -161,7 +163,7 @@ fn grade_from(name: &str, conditions: &str) -> String {
 }
 
 /// Racing Australia writes "SAMPLE STAYER (NZ)"; keep the country tag, fix the case.
-fn clean_horse(s: &str) -> String {
+pub(crate) fn clean_horse(s: &str) -> String {
     let s = s.trim();
     let (name, tag) = match s.rfind(" (") {
         Some(i) if s.ends_with(')') => (&s[..i], &s[i..]),
@@ -170,7 +172,18 @@ fn clean_horse(s: &str) -> String {
     format!("{}{}", title_case(name), tag)
 }
 
-fn title_case(s: &str) -> String {
+/// "Ms Emma Ly (a2/51kg), (late alt)" -> "Emma Ly": drop the honorific, the apprentice
+/// claim and any trailing note, so the same rider matches across sources.
+pub fn clean_person(s: &str) -> String {
+    let s = s.split([',', '(']).next().unwrap_or_default().trim();
+    let s = ["Ms ", "Mr ", "Mrs ", "Miss "]
+        .iter()
+        .find_map(|h| s.strip_prefix(h))
+        .unwrap_or(s);
+    s.trim().to_string()
+}
+
+pub(crate) fn title_case(s: &str) -> String {
     s.split_whitespace()
         .map(|w| {
             let mut c = w.chars();
@@ -183,7 +196,7 @@ fn title_case(s: &str) -> String {
         .join(" ")
 }
 
-fn venue_token(venue: &str) -> String {
+pub(crate) fn venue_token(venue: &str) -> String {
     venue.trim().to_uppercase().replace(' ', "_")
 }
 
@@ -262,6 +275,17 @@ mod tests {
         assert_eq!(f.starts[1].condition, "Soft 5");
         let json = serde_json::to_string(&f).unwrap();
         assert!(!json.contains("price"), "no price field survives ingest");
+    }
+
+    #[test]
+    fn people_lose_honorifics_and_claims() {
+        assert_eq!(clean_person("Ms Emma Ly (a2/51kg)"), "Emma Ly");
+        assert_eq!(
+            clean_person("Ms Claire Ramsbotham (a0/52kg), (late alt)"),
+            "Claire Ramsbotham"
+        );
+        assert_eq!(clean_person("Adrian Layt"), "Adrian Layt");
+        assert_eq!(clean_person(""), "");
     }
 
     #[test]
