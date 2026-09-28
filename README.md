@@ -11,6 +11,7 @@ Ask Alexa+ what racing is on, who is in the Caulfield Cup, how a horse has been 
 
 ```
 crates/trackside-core   domain model (odds-free) and the Store trait; JSON fixture store
+crates/trackside-ingest parsers for the archived Racing Australia fields and form JSON (prices dropped)
 crates/trackside-mcp    the MCP server: 9 tools over axum + rmcp
 fixtures/demo.json      a small demo fixture (synthetic names)
 docs/                   friction log, product feedback, prior-work statement

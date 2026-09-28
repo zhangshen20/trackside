@@ -1,0 +1,13 @@
+[package]
+name = "trackside-ingest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Parses the archived Racing Australia fields, form and sectional files into the odds-free Trackside model"
+
+[dependencies]
+trackside-core = { path = "../trackside-core" }
+anyhow.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true

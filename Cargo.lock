@@ -1140,6 +1140,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "trackside-ingest"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "trackside-core",
+]
+
+[[package]]
 name = "trackside-mcp"
 version = "0.1.0"
 dependencies = [
