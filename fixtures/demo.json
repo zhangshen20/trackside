@@ -1,0 +1,59 @@
+{
+  "meetings": [
+    {
+      "date": "2026-10-17",
+      "state": "VIC",
+      "venue": "Caulfield",
+      "track_condition": "Good 4",
+      "rail": "True",
+      "weather": "Fine",
+      "races": [
+        {
+          "race_number": 8,
+          "name": "Caulfield Cup",
+          "start_local": "17:00",
+          "distance_m": 2400,
+          "class": "Group 1 Handicap",
+          "prize": "$5,000,000",
+          "grade": "Group 1",
+          "runners": [
+            { "number": 1, "horse": "Sample Stayer", "jockey": "J. Example", "trainer": "C. Trainer", "barrier": 4, "weight_kg": 57.5, "rating": 108, "last10": "x21131", "scratched": false },
+            { "number": 2, "horse": "Demo Miler", "jockey": "A. Rider", "trainer": "M. Yard", "barrier": 11, "weight_kg": 55.0, "rating": 104, "last10": "4x2212", "scratched": false },
+            { "number": 3, "horse": "Placeholder Prince", "jockey": "B. Hoop", "trainer": "C. Trainer", "barrier": 1, "weight_kg": 53.5, "rating": 101, "last10": "31x114", "scratched": false }
+          ]
+        }
+      ]
+    }
+  ],
+  "form": [
+    {
+      "horse": "Sample Stayer",
+      "trainer": "C. Trainer",
+      "career": { "starts": 14, "wins": 5, "seconds": 3, "thirds": 2 },
+      "first_up": { "starts": 3, "wins": 1, "seconds": 1, "thirds": 0 },
+      "second_up": { "starts": 3, "wins": 2, "seconds": 0, "thirds": 0 },
+      "good": { "starts": 9, "wins": 4, "seconds": 2, "thirds": 1 },
+      "soft": { "starts": 4, "wins": 1, "seconds": 1, "thirds": 1 },
+      "heavy": { "starts": 1, "wins": 0, "seconds": 0, "thirds": 0 },
+      "starts": [
+        { "date": "2026-09-26", "venue": "Flemington", "distance_m": 2000, "condition": "Good 4", "class": "Group 2", "finish": 1, "starters": 12, "margin_lengths": 0.8, "jockey": "J. Example", "weight_kg": 57.0, "barrier": 6, "time": "2:02.41", "last_600_s": 34.9, "pos_800": 5, "pos_400": 3 },
+        { "date": "2026-09-05", "venue": "Caulfield", "distance_m": 1800, "condition": "Soft 5", "class": "Group 3", "finish": 3, "starters": 10, "margin_lengths": 1.5, "jockey": "J. Example", "weight_kg": 58.0, "barrier": 2, "time": "1:50.12", "last_600_s": 35.6, "pos_800": 7, "pos_400": 6 }
+      ]
+    }
+  ],
+  "results": [
+    {
+      "date": "2026-09-26",
+      "venue": "Flemington",
+      "race_number": 7,
+      "placings": [
+        { "position": 1, "number": 3, "horse": "Sample Stayer", "jockey": "J. Example", "margin_lengths": null },
+        { "position": 2, "number": 8, "horse": "Demo Miler", "jockey": "A. Rider", "margin_lengths": 0.8 },
+        { "position": 3, "number": 1, "horse": "Placeholder Prince", "jockey": "B. Hoop", "margin_lengths": 1.3 }
+      ],
+      "winning_time": "2:02.41",
+      "track_condition": "Good 4",
+      "fastest_last_600": { "horse": "Demo Miler", "last_600_s": 34.6, "source": "racing.com sectional timing" }
+    }
+  ]
+}
