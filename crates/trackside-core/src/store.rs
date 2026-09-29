@@ -50,13 +50,31 @@ pub struct FixtureStore {
     form_by_horse: HashMap<String, usize>,
 }
 
-fn norm(s: &str) -> String {
+/// Lower-cased, punctuation-free, single-spaced: the key every name lookup uses.
+pub fn norm(s: &str) -> String {
     s.trim()
         .to_lowercase()
-        .replace(['\'', '-', '.'], "")
+        .replace(['\'', '.'], "")
+        .replace(['-', ','], " ")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Venue names differ by source and sponsor: Racing Australia says "Rosehill Gardens" and
+/// "Thomas Farms RC Murray Bridge", results feeds say "Rosehill" and "Murray Bridge", and
+/// listeners say either. Two names match when one is the other's whole-word prefix or suffix.
+pub fn venue_matches(a: &str, b: &str) -> bool {
+    let (a, b) = (norm(a), norm(b));
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    let (long, short) = if a.len() >= b.len() {
+        (&a, &b)
+    } else {
+        (&b, &a)
+    };
+    long == short || long.starts_with(&format!("{short} ")) || long.ends_with(&format!(" {short}"))
 }
 
 impl FixtureStore {
@@ -74,9 +92,13 @@ impl FixtureStore {
     }
 
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
-        let text = std::fs::read_to_string(path.as_ref())
+        let bytes = std::fs::read(path.as_ref())
             .with_context(|| format!("reading fixture {}", path.as_ref().display()))?;
-        let fixture: Fixture = serde_json::from_str(&text).context("parsing fixture JSON")?;
+        Self::from_json(&bytes)
+    }
+
+    pub fn from_json(bytes: &[u8]) -> Result<Self> {
+        let fixture: Fixture = serde_json::from_slice(bytes).context("parsing fixture JSON")?;
         Ok(Self::from_fixture(fixture))
     }
 }
@@ -99,12 +121,11 @@ impl Store for FixtureStore {
         venue: &str,
         race_number: u32,
     ) -> Result<Option<RaceCard>> {
-        let venue = norm(venue);
         Ok(self
             .fixture
             .meetings
             .iter()
-            .filter(|m| m.date == date && norm(&m.venue) == venue)
+            .filter(|m| m.date == date && venue_matches(&m.venue, venue))
             .flat_map(|m| m.races.iter())
             .find(|r| r.race_number == race_number)
             .cloned())
@@ -123,12 +144,13 @@ impl Store for FixtureStore {
         venue: &str,
         race_number: u32,
     ) -> Result<Option<RaceResult>> {
-        let venue = norm(venue);
         Ok(self
             .fixture
             .results
             .iter()
-            .find(|r| r.date == date && norm(&r.venue) == venue && r.race_number == race_number)
+            .find(|r| {
+                r.date == date && venue_matches(&r.venue, venue) && r.race_number == race_number
+            })
             .cloned())
     }
 
@@ -161,6 +183,7 @@ impl Store for FixtureStore {
                     continue;
                 }
                 seen = true;
+                // Position 0 is a finisher outside the placings; it still counts as a start.
                 record.starts += 1;
                 match p.position {
                     1 => record.wins += 1,
@@ -177,5 +200,23 @@ impl Store for FixtureStore {
             to,
             record,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn venues_match_across_sponsors_and_sources() {
+        assert!(venue_matches("Rosehill Gardens", "rosehill"));
+        assert!(venue_matches(
+            "Thomas Farms RC Murray Bridge",
+            "MURRAY BRIDGE"
+        ));
+        assert!(venue_matches("Aquis Park Gold Coast", "Gold Coast"));
+        assert!(venue_matches("Come-By-Chance,Picnic", "come by chance"));
+        assert!(!venue_matches("Moonee Valley", "Valley Park"));
+        assert!(!venue_matches("", "Caulfield"));
     }
 }

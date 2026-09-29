@@ -81,3 +81,74 @@ pub struct RaHorseForm {
     pub heavy: RaRecord,
     pub starts: Vec<RaStart>,
 }
+
+/// A TAB results document for one race (`Results_OneRace_*.JSON`). Only the finishing order,
+/// riders and scratchings are declared; the dividend and price blocks are never deserialised.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TabRaceResult {
+    pub race_number: i64,
+    pub race_status: String,
+    pub scratchings: Vec<TabRunnerRef>,
+    pub runners: Vec<TabRunner>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TabRunnerRef {
+    pub runner_number: i64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TabRunner {
+    pub runner_name: String,
+    pub runner_number: i64,
+    pub finishing_position: i64,
+    pub rider_driver_name: String,
+}
+
+/// The day's meeting list (`Meetings_*.JSON`, `Results_Meetings_*.JSON`): track and weather.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct TabMeetings {
+    pub meetings: Vec<TabMeeting>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct TabMeeting {
+    pub meeting_name: String,
+    pub location: String,
+    pub race_type: String,
+    pub weather_condition: Option<String>,
+    pub track_condition: Option<String>,
+}
+
+/// One row of the sectional canon `races.csv`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct SectionalRace {
+    pub state: String,
+    pub venue_key: String,
+    pub venue_source: String,
+    pub race_number: u32,
+    pub track_condition: String,
+    pub race_time_s: Option<f64>,
+}
+
+/// One row of the sectional canon `runners.csv`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct SectionalRunner {
+    pub state: String,
+    pub venue_key: String,
+    pub venue_source: String,
+    pub race_number: u32,
+    pub horse_name: String,
+    pub saddle: Option<u32>,
+    pub finish_position: Option<u32>,
+    pub margin_l: Option<f64>,
+    pub last_600_s: Option<f64>,
+    pub source: String,
+}

@@ -1,0 +1,126 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Trackside MCP server for Alexa+: one arm64 Lambda behind an API Gateway HTTP API, serving an
+  odds-free racing snapshot from Trackside's own bucket. Every resource is named trackside-*
+  and tagged Project=trackside.
+
+Parameters:
+  ArtifactBucket:
+    Type: String
+    Description: Trackside's own bucket (trackside-*), holding the Lambda zip and the snapshot.
+    AllowedPattern: "trackside-.*"
+  CodeKey:
+    Type: String
+    Description: Key of the Lambda zip (a `bootstrap` binary) in ArtifactBucket.
+  SnapshotKey:
+    Type: String
+    Default: snapshots/latest.json.gz
+  RateLimit:
+    Type: Number
+    Default: 10
+    Description: Steady-state requests per second the API accepts before throttling.
+  BurstLimit:
+    Type: Number
+    Default: 20
+
+Resources:
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/trackside-mcp
+      RetentionInDays: 14
+      Tags: [{ Key: Project, Value: trackside }]
+
+  FunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: trackside-mcp-lambda
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: trackside-mcp-lambda
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "${LogGroup.Arn}:*"
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:aws:s3:::${ArtifactBucket}/snapshots/*"
+      Tags: [{ Key: Project, Value: trackside }]
+
+  Function:
+    Type: AWS::Lambda::Function
+    DependsOn: LogGroup
+    Properties:
+      FunctionName: trackside-mcp
+      Description: Trackside MCP server (Streamable HTTP, stateless)
+      Runtime: provided.al2023
+      Architectures: [arm64]
+      Handler: bootstrap
+      MemorySize: 1024
+      Timeout: 20
+      Role: !GetAtt FunctionRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref CodeKey
+      Environment:
+        Variables:
+          TRACKSIDE_SNAPSHOT: !Sub "s3://${ArtifactBucket}/${SnapshotKey}"
+          RUST_LOG: info
+      Tags: [{ Key: Project, Value: trackside }]
+
+  Api:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: trackside-mcp
+      ProtocolType: HTTP
+      Description: Public MCP endpoint for Trackside (/mcp)
+      Tags: { Project: trackside }
+
+  Integration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref Api
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt Function.Arn
+      PayloadFormatVersion: "2.0"
+      TimeoutInMillis: 25000
+
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref Api
+      RouteKey: $default
+      Target: !Sub "integrations/${Integration}"
+
+  Stage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref Api
+      StageName: $default
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingRateLimit: !Ref RateLimit
+        ThrottlingBurstLimit: !Ref BurstLimit
+      Tags: { Project: trackside }
+
+  InvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Function
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*"
+
+Outputs:
+  McpUrl:
+    Description: Point MCP clients (Inspector, Alexa+) here.
+    Value: !Sub "${Api.ApiEndpoint}/mcp"
+  FunctionName:
+    Value: !Ref Function

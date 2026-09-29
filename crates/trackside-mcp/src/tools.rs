@@ -3,25 +3,29 @@
 
 use std::sync::Arc;
 
-use chrono::{Local, NaiveDate};
+use chrono::{NaiveDate, Utc};
+use chrono_tz::Australia::Melbourne;
 use rmcp::{
-    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::*,
-    schemars, tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler,
+    handler::server::wrapper::Parameters, model::*, schemars, tool, tool_handler, tool_router,
+    ErrorData as McpError, ServerHandler,
 };
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::RwLock;
 
-use trackside_core::{spring_carnival_2026, Store, SOURCE_RACING_AUSTRALIA, SOURCE_SECTIONALS};
+use trackside_core::{
+    norm, spring_carnival_2026, venue_matches, Store, SOURCE_RACING_AUSTRALIA, SOURCE_SECTIONALS,
+};
 
 #[derive(Clone)]
 pub struct Trackside {
     store: Arc<dyn Store>,
-    /// Horses the user follows. Per-server for now; keyed by account once OAuth lands.
-    stable: Arc<RwLock<Vec<String>>>,
-    tool_router: ToolRouter<Trackside>,
+    /// Horses the user follows. Shared by every session in this process for now; keyed by
+    /// account (and persisted) once OAuth lands.
+    stable: Stable,
 }
+
+pub type Stable = Arc<RwLock<Vec<String>>>;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DateArgs {
@@ -61,7 +65,7 @@ pub struct PersonArgs {
 
 fn parse_date(s: &Option<String>) -> Result<NaiveDate, McpError> {
     match s {
-        None => Ok(Local::now().date_naive()),
+        None => Ok(Utc::now().with_timezone(&Melbourne).date_naive()),
         Some(text) => NaiveDate::parse_from_str(text, "%Y-%m-%d").map_err(|_| {
             McpError::invalid_params(format!("date must be YYYY-MM-DD, got {text}"), None)
         }),
@@ -88,12 +92,8 @@ fn fmt_len(m: Option<f64>) -> String {
 
 #[tool_router]
 impl Trackside {
-    pub fn new(store: Arc<dyn Store>) -> Self {
-        Self {
-            store,
-            stable: Arc::new(RwLock::new(Vec::new())),
-            tool_router: Self::tool_router(),
-        }
+    pub fn new(store: Arc<dyn Store>, stable: Stable) -> Self {
+        Self { store, stable }
     }
 
     #[tool(
@@ -363,9 +363,11 @@ impl Trackside {
                 json!({ "found": false }),
             ));
         };
+        // Voice reads the placegetters; the full finishing order stays in structured content.
         let placings = result
             .placings
             .iter()
+            .filter(|p| (1..=4).contains(&p.position))
             .map(|p| {
                 format!(
                     "{}{} {} ridden by {}{}",
@@ -486,11 +488,7 @@ impl Trackside {
             let mut found = false;
             for m in &meetings {
                 for r in &m.races {
-                    if let Some(runner) = r
-                        .runners
-                        .iter()
-                        .find(|x| x.horse.eq_ignore_ascii_case(horse))
-                    {
+                    if let Some(runner) = r.runners.iter().find(|x| norm(&x.horse) == norm(horse)) {
                         found = true;
                         lines.push(format!(
                             "{} runs in race {} at {} ({}) at {}, barrier {}, {} up",
@@ -577,7 +575,7 @@ impl Trackside {
             .meetings(date)
             .await
             .ok()
-            .and_then(|ms| ms.into_iter().find(|m| m.venue.eq_ignore_ascii_case(venue)))
+            .and_then(|ms| ms.into_iter().find(|m| venue_matches(&m.venue, venue)))
             .and_then(|m| m.track_condition)
             .unwrap_or_else(|| "not yet rated".into())
     }
