@@ -55,6 +55,7 @@ pub async fn build(
         }
         reports.push(day.report);
     }
+    fold_results_into_form(&meetings, &results, &mut form);
     Ok((
         Fixture {
             meetings,
@@ -63,6 +64,81 @@ pub async fn build(
         },
         reports,
     ))
+}
+
+/// Racing Australia form is published before the race, so a horse that ran this week still
+/// shows its previous start. Add each result in the snapshot as a start (and to the records)
+/// when the form does not have it yet.
+fn fold_results_into_form(
+    meetings: &[Meeting],
+    results: &[RaceResult],
+    form: &mut BTreeMap<String, HorseForm>,
+) {
+    let mut results: Vec<&RaceResult> = results.iter().collect();
+    results.sort_by_key(|r| r.date);
+    for r in results {
+        let card = meetings
+            .iter()
+            .find(|m| m.date == r.date && m.venue == r.venue)
+            .and_then(|m| m.races.iter().find(|c| c.race_number == r.race_number));
+        let condition = r.track_condition.clone().unwrap_or_default();
+        for p in &r.placings {
+            let Some(f) = form.get_mut(&norm(&p.horse)) else {
+                continue;
+            };
+            if f.starts.iter().any(|s| s.date >= r.date) {
+                continue;
+            }
+            let runner = card.and_then(|c| c.runners.iter().find(|x| x.number == p.number));
+            let finish = (p.position > 0).then_some(p.position);
+            f.starts.insert(
+                0,
+                PastStart {
+                    date: r.date,
+                    venue: r.venue.clone(),
+                    distance_m: card.and_then(|c| c.distance_m),
+                    condition: condition.clone(),
+                    class: card.map(|c| c.class.clone()).unwrap_or_default(),
+                    finish,
+                    starters: Some(r.placings.len() as u32),
+                    margin_lengths: p.margin_lengths,
+                    jockey: p.jockey.clone(),
+                    weight_kg: runner.and_then(|x| x.weight_kg),
+                    barrier: runner.and_then(|x| x.barrier),
+                    time: if finish == Some(1) {
+                        r.winning_time.clone().unwrap_or_default()
+                    } else {
+                        String::new()
+                    },
+                    last_600_s: r
+                        .fastest_last_600
+                        .as_ref()
+                        .filter(|s| norm(&s.horse) == norm(&p.horse))
+                        .map(|s| s.last_600_s),
+                    pos_800: None,
+                    pos_400: None,
+                },
+            );
+            let going = condition.to_ascii_lowercase();
+            let mut records = vec![&mut f.career];
+            if going.starts_with("good") || going.starts_with("firm") {
+                records.push(&mut f.good);
+            } else if going.starts_with("soft") {
+                records.push(&mut f.soft);
+            } else if going.starts_with("heavy") {
+                records.push(&mut f.heavy);
+            }
+            for rec in records {
+                rec.starts += 1;
+                match finish {
+                    Some(1) => rec.wins += 1,
+                    Some(2) => rec.seconds += 1,
+                    Some(3) => rec.thirds += 1,
+                    _ => {}
+                }
+            }
+        }
+    }
 }
 
 struct Day {
@@ -538,6 +614,15 @@ mod tests {
 
         assert_eq!(fx.form.len(), 1);
         assert_eq!(fx.form[0].trainer, "B Yard");
+        let latest = &fx.form[0].starts[0];
+        assert_eq!(
+            (latest.date, latest.finish, latest.venue.as_str()),
+            (date, Some(1), "Rosehill Gardens"),
+            "the day's win is folded into form published before it"
+        );
+        assert_eq!(latest.time, "1:17.07");
+        assert_eq!(fx.form[0].career.starts, 6);
+        assert_eq!(fx.form[0].career.wins, 3);
 
         let r = &fx.results[0];
         let order: Vec<_> = r
