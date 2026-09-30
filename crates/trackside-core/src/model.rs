@@ -149,6 +149,20 @@ pub struct PastStart {
     pub pos_400: Option<u32>,
 }
 
+impl PastStart {
+    /// Barrier trials and jump-outs are practice, not starts. Racing Australia marks most of
+    /// them, but some jump-outs arrive unmarked, as class "Out - S5" on a "Jump" track.
+    pub fn is_trial(&self) -> bool {
+        let class = self.class.trim().to_ascii_lowercase();
+        self.condition.trim().eq_ignore_ascii_case("jump")
+            || class.starts_with("out -")
+            || class.ends_with("-bt")
+            || class.contains("trial")
+            || class.contains("jump out")
+            || class.contains("jumpout")
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct HorseForm {
@@ -192,6 +206,38 @@ pub struct SectionalHighlight {
     pub horse: String,
     pub last_600_s: f64,
     pub source: String,
+}
+
+/// The headline purse from Racing Australia's prize text, which opens with the total and
+/// runs on into the split: "$2,000,000.1st $1,200,000, 2nd ..." gives 2,000,000.
+pub fn prize_total(prize: &str) -> Option<u64> {
+    let s = prize.trim_start();
+    let s = s.strip_prefix("Of ").unwrap_or(s).trim_start_matches('$');
+    let digits: String = s
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == ',')
+        .filter(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok().filter(|&n| n > 0)
+}
+
+/// A purse as it would be said aloud: "$2 million", "$1.5 million", "$150,000".
+pub fn spoken_money(n: u64) -> String {
+    if n >= 1_000_000 {
+        let m = n as f64 / 1_000_000.0;
+        let m = format!("{m:.2}");
+        let m = m.trim_end_matches('0').trim_end_matches('.');
+        return format!("${m} million");
+    }
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    format!("${out}")
 }
 
 /// Wins and places for a jockey or trainer over a period.
@@ -246,5 +292,29 @@ mod tests {
             "Bonus on prizemoney pools for races."
         );
         assert_eq!(without_bookmakers("Tableland Cup"), "Tableland Cup");
+    }
+
+    #[test]
+    fn jump_outs_and_trials_are_not_starts() {
+        let start = |condition: &str, class: &str| PastStart {
+            condition: condition.into(),
+            class: class.into(),
+            ..Default::default()
+        };
+        assert!(start("Jump", "Out - S5").is_trial());
+        assert!(start("Good 4", "OPEN-BT").is_trial());
+        assert!(!start("Soft 6", "MEMSIE Group 1").is_trial());
+        assert!(!start("Good 4", "").is_trial());
+    }
+
+    #[test]
+    fn prize_text_reads_as_a_spoken_purse() {
+        let text = "2,000,000.1st $1,200,000, 2nd $360,000, 3rd $180,000";
+        assert_eq!(prize_total(text), Some(2_000_000));
+        assert_eq!(prize_total("$5,000,000"), Some(5_000_000));
+        assert_eq!(prize_total(""), None);
+        assert_eq!(spoken_money(2_000_000), "$2 million");
+        assert_eq!(spoken_money(1_500_000), "$1.5 million");
+        assert_eq!(spoken_money(150_000), "$150,000");
     }
 }

@@ -48,6 +48,9 @@ pub struct Fixture {
 pub struct FixtureStore {
     fixture: Fixture,
     form_by_horse: HashMap<String, usize>,
+    /// The same index keyed without country tags, for listeners who say "Jimmysstar" for
+    /// "Jimmysstar (NZ)". A bare name shared by two horses points at the first one loaded.
+    form_by_bare_name: HashMap<String, usize>,
 }
 
 /// Lower-cased, punctuation-free, single-spaced: the key every name lookup uses.
@@ -59,6 +62,61 @@ pub fn norm(s: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// A horse's name without its country tag, normalised: "Jimmysstar (NZ)" -> "jimmysstar".
+pub fn horse_key(s: &str) -> String {
+    let s = s.trim();
+    let bare = match s.rfind(" (") {
+        Some(i) if s.ends_with(')') => &s[..i],
+        _ => s,
+    };
+    norm(bare)
+}
+
+/// Racing Australia's form lines name tracks by code ("CAUL", "CTRN"), not by name.
+pub fn looks_like_track_code(s: &str) -> bool {
+    (2..=5).contains(&s.len()) && s.chars().all(|c| c.is_ascii_uppercase())
+}
+
+/// Track codes seen in the archive whose names are certain. Everything else is learned
+/// from the snapshot itself (see `resolve_track_codes`).
+const KNOWN_TRACK_CODES: &[(&str, &str)] = &[("CAUL", "Caulfield"), ("FLEM", "Flemington")];
+
+/// Tidy form for speaking: drop barrier trials, and replace track codes with the venue
+/// names used everywhere else. A code is learned when a horse's form shows a start on a date
+/// the snapshot also has a meeting for with that horse in the field.
+fn tidy_form(fixture: &mut Fixture) {
+    let mut names: HashMap<String, String> = KNOWN_TRACK_CODES
+        .iter()
+        .map(|(c, n)| (c.to_string(), n.to_string()))
+        .collect();
+    let mut ran_at: HashMap<(NaiveDate, String), &str> = HashMap::new();
+    for m in &fixture.meetings {
+        for r in &m.races {
+            for x in &r.runners {
+                ran_at.insert((m.date, horse_key(&x.horse)), &m.venue);
+            }
+        }
+    }
+    for f in &fixture.form {
+        let key = horse_key(&f.horse);
+        for s in &f.starts {
+            if looks_like_track_code(&s.venue) && !names.contains_key(&s.venue) {
+                if let Some(venue) = ran_at.get(&(s.date, key.clone())) {
+                    names.insert(s.venue.clone(), venue.to_string());
+                }
+            }
+        }
+    }
+    for f in &mut fixture.form {
+        f.starts.retain(|s| !s.is_trial());
+        for s in &mut f.starts {
+            if let Some(name) = names.get(&s.venue) {
+                s.venue = name.clone();
+            }
+        }
+    }
 }
 
 /// Venue names differ by source and sponsor: Racing Australia says "Rosehill Gardens" and
@@ -78,16 +136,22 @@ pub fn venue_matches(a: &str, b: &str) -> bool {
 }
 
 impl FixtureStore {
-    pub fn from_fixture(fixture: Fixture) -> Self {
+    pub fn from_fixture(mut fixture: Fixture) -> Self {
+        tidy_form(&mut fixture);
         let form_by_horse = fixture
             .form
             .iter()
             .enumerate()
             .map(|(i, f)| (norm(&f.horse), i))
             .collect();
+        let mut form_by_bare_name = HashMap::new();
+        for (i, f) in fixture.form.iter().enumerate() {
+            form_by_bare_name.entry(horse_key(&f.horse)).or_insert(i);
+        }
         Self {
             fixture,
             form_by_horse,
+            form_by_bare_name,
         }
     }
 
@@ -135,6 +199,7 @@ impl Store for FixtureStore {
         Ok(self
             .form_by_horse
             .get(&norm(horse))
+            .or_else(|| self.form_by_bare_name.get(&horse_key(horse)))
             .map(|&i| self.fixture.form[i].clone()))
     }
 
@@ -218,5 +283,68 @@ mod tests {
         assert!(venue_matches("Come-By-Chance,Picnic", "come by chance"));
         assert!(!venue_matches("Moonee Valley", "Valley Park"));
         assert!(!venue_matches("", "Caulfield"));
+    }
+
+    fn start(date: &str, venue: &str, condition: &str, class: &str) -> PastStart {
+        PastStart {
+            date: date.parse().unwrap(),
+            venue: venue.into(),
+            condition: condition.into(),
+            class: class.into(),
+            ..Default::default()
+        }
+    }
+
+    fn snapshot() -> FixtureStore {
+        let meeting = Meeting {
+            date: "2026-09-22".parse().unwrap(),
+            state: "VIC".into(),
+            venue: "Sandown Hillside".into(),
+            races: vec![RaceCard {
+                race_number: 1,
+                runners: vec![Runner {
+                    horse: "Jimmysstar (NZ)".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        FixtureStore::from_fixture(Fixture {
+            meetings: vec![meeting],
+            form: vec![HorseForm {
+                horse: "Jimmysstar (NZ)".into(),
+                starts: vec![
+                    start("2026-09-22", "SAND", "Good 4", "BM78"),
+                    start("2026-09-14", "CTRN", "Jump", "Out - S5"),
+                    start("2026-08-29", "CAUL", "Soft 6", "MEMSIE Group 1"),
+                    start("2026-08-01", "SAND", "Good 3", "BM70"),
+                    start("2026-07-01", "ZZZZ", "Good 3", "BM70"),
+                ],
+                ..Default::default()
+            }],
+            results: vec![],
+        })
+    }
+
+    #[tokio::test]
+    async fn horses_are_found_without_their_country_tag() {
+        let store = snapshot();
+        for name in ["Jimmysstar (NZ)", "jimmysstar", "JIMMYSSTAR"] {
+            let form = store.horse_form(name).await.unwrap();
+            assert_eq!(form.unwrap().horse, "Jimmysstar (NZ)", "{name}");
+        }
+        assert!(store.horse_form("Jimmy").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn form_drops_jump_outs_and_names_tracks() {
+        let form = snapshot().horse_form("Jimmysstar").await.unwrap().unwrap();
+        let venues: Vec<_> = form.starts.iter().map(|s| s.venue.as_str()).collect();
+        // SAND is learned from the 22 Sep meeting; CAUL is known; ZZZZ stays a code.
+        assert_eq!(
+            venues,
+            ["Sandown Hillside", "Caulfield", "Sandown Hillside", "ZZZZ"]
+        );
     }
 }

@@ -1,8 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   Trackside MCP server for Alexa+: one arm64 Lambda behind an API Gateway HTTP API, serving an
-  odds-free racing snapshot from Trackside's own bucket. Every resource is named trackside-*
-  and tagged Project=trackside.
+  odds-free racing snapshot from Trackside's own bucket, with a Cognito user pool as its OAuth
+  2.1 authorization server. Every resource is named trackside-* and tagged Project=trackside.
 
 Parameters:
   ArtifactBucket:
@@ -22,8 +22,92 @@ Parameters:
   BurstLimit:
     Type: Number
     Default: 20
+  OAuthCallbackUrls:
+    Type: CommaDelimitedList
+    Description: >-
+      Redirect URIs allowed for the user sign-in client: MCP Inspector, Claude custom
+      connectors, and the Alexa+ account-linking redirect URLs once the add-on is registered.
+    Default: http://localhost:6274/oauth/callback,https://claude.ai/api/mcp/auth_callback
 
 Resources:
+  # OAuth 2.1 for Alexa+: a service client (client_credentials, discovery only) and a user
+  # client (authorization code + PKCE, tool calls). The server checks the tokens itself.
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: trackside-users
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      AdminCreateUserConfig: { AllowAdminCreateUserOnly: false }
+      AccountRecoverySetting:
+        RecoveryMechanisms: [{ Name: verified_email, Priority: 1 }]
+      Policies:
+        PasswordPolicy: { MinimumLength: 10, RequireLowercase: true, RequireNumbers: true, RequireSymbols: false, RequireUppercase: false }
+      UserPoolTags: { Project: trackside }
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref UserPool
+      Domain: !Sub "trackside-${AWS::AccountId}"
+
+  ResourceServer:
+    Type: AWS::Cognito::UserPoolResourceServer
+    Properties:
+      UserPoolId: !Ref UserPool
+      Identifier: trackside
+      Name: Trackside MCP
+      Scopes:
+        - { ScopeName: "mcp:service", ScopeDescription: "Discover Trackside's tools" }
+        - { ScopeName: "mcp:tools", ScopeDescription: "Use Trackside's tools for the signed-in user" }
+
+  ServiceClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: ResourceServer
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: trackside-service
+      GenerateSecret: true
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [client_credentials]
+      AllowedOAuthScopes: [trackside/mcp:service]
+      AccessTokenValidity: 60
+      TokenValidityUnits: { AccessToken: minutes }
+
+  # For scripts/token.sh and the post-deploy smoke test: machine tokens with both scopes.
+  # Cognito only puts custom scopes in tokens from its OAuth endpoints, so a scripted user
+  # sign-in can't stand in for it.
+  SmokeClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: ResourceServer
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: trackside-smoke
+      GenerateSecret: true
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [client_credentials]
+      AllowedOAuthScopes: [trackside/mcp:service, trackside/mcp:tools]
+      AccessTokenValidity: 60
+      TokenValidityUnits: { AccessToken: minutes }
+
+  UserClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: ResourceServer
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: trackside-user
+      GenerateSecret: true
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, email, trackside/mcp:service, trackside/mcp:tools]
+      CallbackURLs: !Ref OAuthCallbackUrls
+      SupportedIdentityProviders: [COGNITO]
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+      AccessTokenValidity: 60
+      RefreshTokenValidity: 30
+      TokenValidityUnits: { AccessToken: minutes, RefreshToken: days }
+
   LogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -72,6 +156,9 @@ Resources:
       Environment:
         Variables:
           TRACKSIDE_SNAPSHOT: !Sub "s3://${ArtifactBucket}/${SnapshotKey}"
+          TRACKSIDE_AUTH_ISSUER: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
+          TRACKSIDE_AUTH_DOMAIN: !Sub "https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com"
+          TRACKSIDE_AUTH_CLIENTS: !Join [",", [!Ref ServiceClient, !Ref UserClient, !Ref SmokeClient]]
           RUST_LOG: info
       Tags: [{ Key: Project, Value: trackside }]
 
@@ -124,3 +211,17 @@ Outputs:
     Value: !Sub "${Api.ApiEndpoint}/mcp"
   FunctionName:
     Value: !Ref Function
+  OAuthDomain:
+    Description: Cognito's authorize and token endpoints live here.
+    Value: !Sub "https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com"
+  UserPoolId:
+    Value: !Ref UserPool
+  ServiceClientId:
+    Description: client_credentials client (scope trackside/mcp:service). Secret via describe-user-pool-client.
+    Value: !Ref ServiceClient
+  SmokeClientId:
+    Description: Test-only client_credentials client with both scopes, used by scripts/token.sh.
+    Value: !Ref SmokeClient
+  UserClientId:
+    Description: Sign-in client for Alexa+, Claude and Inspector (code + PKCE). Secret via describe-user-pool-client.
+    Value: !Ref UserClient

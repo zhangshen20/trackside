@@ -2,7 +2,7 @@
 
 Three layers, cheapest first. Run layer 1 after every change, layer 2 before recording anything, layer 3 after every redeploy.
 
-Live endpoint (open until OAuth lands): `https://f534rx2db4.execute-api.ap-southeast-2.amazonaws.com/mcp`
+Live endpoint (needs a Cognito token once the OAuth stack is deployed): `https://f534rx2db4.execute-api.ap-southeast-2.amazonaws.com/mcp`
 
 The deployed snapshot covers 22 to 29 September 2026, so "today" returns no meetings; pass a date inside the snapshot (the examples use Caulfield on Sunday 27 September).
 
@@ -16,7 +16,7 @@ TRACKSIDE_STATELESS=1 cargo run -p trackside-mcp   # in another terminal
 MCP_URL=http://127.0.0.1:8000/mcp scripts/smoke.sh --fixture
 ```
 
-It checks `initialize` (protocol 2025-11-25), `tools/list` (the nine tools, each with a description), one call to every tool, the error paths (unknown tool, missing argument, unknown venue, bad date, unknown method) and that no answer mentions betting, odds or a bookmaker. It also fails when voice text has holes from empty fields (`"the Manikato Stakes,  over 1200 metres"`). Override the probe with `DATE`, `VENUE`, `RACE`, `HORSE`, `PERSON`, `ROLE` and `RESULT_*` when the snapshot moves. Set `MCP_TOKEN` once OAuth is on.
+It checks `initialize` (protocol 2025-11-25), `tools/list` (the nine tools, each with a description), one call to every tool, the error paths (unknown tool, missing argument, unknown venue, bad date, unknown method) and that no answer mentions betting, odds or a bookmaker. It also fails when voice text has holes from empty fields (`"the Manikato Stakes,  over 1200 metres"`). Override the probe with `DATE`, `VENUE`, `RACE`, `HORSE`, `PERSON`, `ROLE` and `RESULT_*` when the snapshot moves. With OAuth on, run `MCP_TOKEN=$(scripts/token.sh) scripts/smoke.sh`: `token.sh` gets a client-credentials token from the stack's test-only smoke client (both scopes), and the smoke test adds three checks: a request without a token gets 401, and both metadata documents resolve.
 
 The script sends no `Mcp-Session-Id`, so a local server must run stateless, the way Lambda does.
 
@@ -45,13 +45,13 @@ Transport **Streamable HTTP**, URL as above, Connect. Then:
 | `follow_horse` then `my_stable` | `{"horse":"Extragalactic"}`, then `{"date":"2026-09-27"}` |
 | `carnival_guide` | `{}` |
 
-Once OAuth is on, Inspector's **Auth** panel runs the authorization-code + PKCE flow against the server's protected-resource metadata; that is the quickest way to prove discovery works before Alexa+ sees it.
+With OAuth on, Inspector's **Auth** panel runs the authorization-code + PKCE flow from the server's metadata. Give it the stack's `UserClientId` and that client's secret (`aws cognito-idp describe-user-pool-client`), sign up with an email on Cognito's page, and the tools run as that user. `http://localhost:6274/oauth/callback` is already an allowed redirect. That is the quickest way to prove discovery works before Alexa+ sees it.
 
 ## 2. Natural-language check with a real model
 
 Protocol tests prove the tools answer; they don't prove a model picks the right tool, fills the arguments a fan would imply, or turns the answer into something worth saying aloud. Alexa+ testing is US-only, so use Claude as a stand-in model:
 
-- **Claude.ai** (web or desktop): Settings > Connectors > Add custom connector, paste the `/mcp` URL. Enable it in a new chat.
+- **Claude.ai** (web or desktop): Settings > Connectors > Add custom connector, paste the `/mcp` URL, and under advanced settings give it the `UserClientId` and its secret (Cognito has no dynamic client registration). Enable it in a new chat.
 - **Claude Code**: `claude mcp add --transport http trackside <url>`.
 
 Ask these, one per chat, and judge the answer as if it were spoken:
@@ -80,12 +80,17 @@ Run on the Mac that deploys, straight after `deploy/deploy.sh` prints the URL:
 - [ ] CloudWatch: no `ERROR` lines for the Lambda since the deploy (`aws logs tail /aws/lambda/<function> --since 10m`).
 - [ ] With OAuth on: an unauthenticated `initialize` returns 401, `/.well-known/oauth-protected-resource` resolves, and the smoke test passes with `MCP_TOKEN`.
 
-## What Alexa+ will require that this server does not do yet
+## How the server meets Alexa+'s auth rules
 
-From Amazon's Alexa+ MCP toolkit authentication docs:
+From Amazon's Alexa+ MCP toolkit authentication docs, and how Trackside does each:
 
-- OAuth 2.1 in two tiers: `client_credentials` with scope `mcp:service` for `initialize` and `tools/list`, and authorization code + PKCE (`S256`) with `mcp:tools` for tool calls on behalf of a user.
-- `401 Unauthorized` on unauthenticated requests, a Protected Resource Metadata document (RFC 9728) at the well-known URI, and authorization-server metadata at `/.well-known/oauth-authorization-server` listing `code_challenge_methods_supported: ["S256"]`.
-- Streamable HTTP (done) and MCP Apps for visuals (not started).
+| Alexa+ asks for | Trackside |
+| --- | --- |
+| `client_credentials` token for discovery (`initialize`, `tools/list`) | Cognito client `trackside-service`, scope `trackside/mcp:service` |
+| Authorization code + PKCE (S256) for tool calls for a user | Cognito client `trackside-user`, scope `trackside/mcp:tools`; a service token calling a tool gets 403 `insufficient_scope` |
+| `401` for unauthenticated requests | `401` with `WWW-Authenticate: Bearer resource_metadata=".../.well-known/oauth-protected-resource"` |
+| Protected Resource Metadata (RFC 9728) | `/.well-known/oauth-protected-resource` (and `/mcp` suffixed) |
+| Authorization-server metadata at `/.well-known/oauth-authorization-server` with `code_challenge_methods_supported: ["S256"]` | Served by Trackside, pointing at Cognito's `/oauth2/authorize` and `/oauth2/token`; Cognito's own discovery document is OpenID-only |
+| No dynamic client registration | Clients are created by the stack; secrets are read from Cognito, never committed |
 
-Today the endpoint accepts anyone and `/.well-known/oauth-protected-resource` returns 404.
+Not yet covered: MCP Apps visuals.
