@@ -2,8 +2,9 @@
 # Build and deploy the Trackside MCP server to AWS (Lambda arm64 + API Gateway HTTP API).
 #
 #   deploy/deploy.sh                 build, upload, deploy the stack
-#   SNAPSHOT_FROM=2026-09-22 SNAPSHOT_TO=2026-09-29 deploy/deploy.sh
+#   HR_ENV=staging SNAPSHOT_FROM=2026-09-22 SNAPSHOT_TO=2026-09-30 deploy/deploy.sh
 #                                    also rebuild the data snapshot from the racing archive
+#                                    (HR_ENV names the archive buckets, hr-<HR_ENV>-*)
 #
 # Needs: cargo, cargo-zigbuild (pip install cargo-zigbuild ziglang), the aarch64 Rust target,
 # the AWS CLI, zip. When TRACKSIDE_ROLE_ARN is set, every AWS call runs as that role.
@@ -35,6 +36,10 @@ if ! aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
 fi
 
 if [[ -n "${SNAPSHOT_FROM:-}" ]]; then
+  if [[ -z "${HR_ENV:-}${TRACKSIDE_RACING_BUCKET:-}" ]]; then
+    echo "set HR_ENV (e.g. HR_ENV=staging) to rebuild the snapshot from the archive" >&2
+    exit 1
+  fi
   cargo run --release -q -p trackside-snapshot -- \
     --from "$SNAPSHOT_FROM" --to "${SNAPSHOT_TO:-$SNAPSHOT_FROM}" \
     --out target/snapshot.json.gz --upload "s3://$BUCKET/snapshots/latest.json.gz"

@@ -45,7 +45,7 @@ The deployed server is an OAuth 2.1 resource server in the shape Alexa+ expects:
 
 ```sh
 pip install cargo-zigbuild ziglang awscli && rustup target add aarch64-unknown-linux-gnu
-SNAPSHOT_FROM=2026-09-22 SNAPSHOT_TO=2026-09-29 deploy/deploy.sh   # prints the /mcp URL
+HR_ENV=staging SNAPSHOT_FROM=2026-09-22 SNAPSHOT_TO=2026-09-30 deploy/deploy.sh   # prints the /mcp URL
 ```
 
 The script cross-compiles the server for arm64, creates a private `trackside-<account>-<region>` bucket for the Lambda zip and the snapshot, and deploys the `trackside-mcp` CloudFormation stack: one Lambda (`provided.al2023`, arm64) behind an API Gateway HTTP API with throttling, and a Cognito user pool with its OAuth domain and app clients. Everything is named `trackside-*` and tagged `Project=trackside`. Set `TRACKSIDE_ROLE_ARN` to run every AWS call as a deploy role. On Lambda the server is stateless, because consecutive requests can reach different instances.

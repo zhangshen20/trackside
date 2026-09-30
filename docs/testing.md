@@ -69,7 +69,7 @@ For each, note: right tool first time, arguments correct, answer short enough to
 
 ## 3. Regression checklist after each redeploy
 
-Run on the Mac that deploys, straight after `deploy/deploy.sh` prints the URL:
+Run on the Mac that deploys (`HR_ENV=staging SNAPSHOT_FROM=... SNAPSHOT_TO=... deploy/deploy.sh`), straight after it prints the URL:
 
 - [ ] `scripts/smoke.sh` passes against the printed URL (set `DATE` etc. to the new snapshot's range).
 - [ ] `list_meetings` for the last date of the snapshot returns meetings (the snapshot really updated).
