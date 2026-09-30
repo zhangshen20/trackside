@@ -28,6 +28,26 @@ Parameters:
       Redirect URIs allowed for the user sign-in client: MCP Inspector, Claude custom
       connectors, and the Alexa+ account-linking redirect URLs once the add-on is registered.
     Default: http://localhost:6274/oauth/callback,https://claude.ai/api/mcp/auth_callback
+  DomainName:
+    Type: String
+    Default: ""
+    Description: >-
+      Public hostname for the API (e.g. mcp.racingaidataset.com.au). Needs CertificateArn.
+      The execute-api URL keeps working alongside it.
+  CertificateArn:
+    Type: String
+    Default: ""
+    Description: An issued ACM certificate for DomainName, in this region (deploy.sh requests it).
+  HostedZoneId:
+    Type: String
+    Default: ""
+    Description: >-
+      Route 53 hosted zone for DomainName, when it is in this account. Leave empty when DNS is
+      hosted elsewhere and add a CNAME to the RegionalHostname output there.
+
+Conditions:
+  HasDomain: !And [!Not [!Equals [!Ref DomainName, ""]], !Not [!Equals [!Ref CertificateArn, ""]]]
+  HasZone: !And [!Condition HasDomain, !Not [!Equals [!Ref HostedZoneId, ""]]]
 
 Resources:
   # OAuth 2.1 for Alexa+: a service client (client_credentials, discovery only) and a user
@@ -209,10 +229,50 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*"
 
+  # The custom hostname. The server builds its OAuth metadata URLs from the Host header, so
+  # each hostname advertises itself and the execute-api URL keeps working.
+  CustomDomain:
+    Type: AWS::ApiGatewayV2::DomainName
+    Condition: HasDomain
+    Properties:
+      DomainName: !Ref DomainName
+      DomainNameConfigurations:
+        - CertificateArn: !Ref CertificateArn
+          EndpointType: REGIONAL
+          SecurityPolicy: TLS_1_2
+      Tags: { Project: trackside }
+
+  CustomDomainMapping:
+    Type: AWS::ApiGatewayV2::ApiMapping
+    Condition: HasDomain
+    DependsOn: Stage
+    Properties:
+      ApiId: !Ref Api
+      DomainName: !Ref CustomDomain
+      Stage: $default
+
+  CustomDomainRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasZone
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt CustomDomain.RegionalDomainName
+        HostedZoneId: !GetAtt CustomDomain.RegionalHostedZoneId
+
 Outputs:
   McpUrl:
     Description: Point MCP clients (Inspector, Alexa+) here.
+    Value: !If [HasDomain, !Sub "https://${DomainName}/mcp", !Sub "${Api.ApiEndpoint}/mcp"]
+  ApiUrl:
+    Description: The execute-api URL, which keeps working alongside a custom domain.
     Value: !Sub "${Api.ApiEndpoint}/mcp"
+  RegionalHostname:
+    Condition: HasDomain
+    Description: CNAME target for DomainName when its DNS is hosted outside Route 53.
+    Value: !GetAtt CustomDomain.RegionalDomainName
   FunctionName:
     Value: !Ref Function
   OAuthDomain:

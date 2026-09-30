@@ -2,7 +2,7 @@
 
 Three layers, cheapest first. Run layer 1 after every change, layer 2 before recording anything, layer 3 after every redeploy.
 
-Live endpoint (needs a Cognito token once the OAuth stack is deployed): `https://f534rx2db4.execute-api.ap-southeast-2.amazonaws.com/mcp`
+Live endpoint (needs a Cognito token): `https://mcp.racingaidataset.com.au/mcp`. The API's own URL, `https://f534rx2db4.execute-api.ap-southeast-2.amazonaws.com/mcp`, still works, and each hostname advertises itself in the OAuth metadata, so a client uses one or the other throughout.
 
 The deployed snapshot covers 22 to 29 September 2026, so "today" returns no meetings; pass a date inside the snapshot (the examples use Caulfield on Sunday 27 September).
 

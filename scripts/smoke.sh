@@ -16,7 +16,7 @@
 #   MCP_TOKEN=$(scripts/token.sh) scripts/smoke.sh
 set -uo pipefail +B  # macOS bash 3.2 brace-expands {"a":1,"b":2} inside "$(...)"
 
-MCP_URL="${MCP_URL:-https://f534rx2db4.execute-api.ap-southeast-2.amazonaws.com/mcp}"
+MCP_URL="${MCP_URL:-https://mcp.racingaidataset.com.au/mcp}"
 if [[ "${1:-}" == "--fixture" ]]; then
   : "${DATE:=2026-10-17}" "${VENUE:=Caulfield}" "${RACE:=8}" "${HORSE:=sample stayer}"
   : "${RESULT_DATE:=2026-09-26}" "${RESULT_VENUE:=Flemington}" "${RESULT_RACE:=7}"
@@ -109,7 +109,7 @@ if [[ -n "${MCP_TOKEN:-}" ]]; then
     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')
   if [[ "$got" == 401 ]]; then PASS=$((PASS + 1)); echo "ok    no token gets 401"; else FAIL=$((FAIL + 1)); echo "FAIL  no token gets 401 (got $got)"; fi
   check "protected-resource metadata" "$(curl -sS "$BASE/.well-known/oauth-protected-resource")" \
-    'r["resource"].endswith("/mcp") and r["authorization_servers"]'
+    'r["resource"] == "'"$MCP_URL"'" and r["authorization_servers"]'
   check "authorization-server metadata lists S256" "$(curl -sS "$BASE/.well-known/oauth-authorization-server")" \
     '"S256" in r["code_challenge_methods_supported"] and r["token_endpoint"].endswith("/oauth2/token")'
 fi

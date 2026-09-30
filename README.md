@@ -5,6 +5,7 @@ A voice-first form guide for Australian thoroughbred racing, built as an Alexa+ 
 Ask Alexa+ what racing is on, who is in the Caulfield Cup, how a horse has been going, who ran the fastest last 600 metres, or to follow a horse through the Spring Carnival. Trackside is a fan companion: **it has no betting, no odds and no tips**, and every answer names its source.
 
 - Track: Alexa+ (MCP server, Streamable HTTP, MCP spec 2025-11-25)
+- Live endpoint: `https://mcp.racingaidataset.com.au/mcp` (OAuth 2.1, see Auth)
 - Mini-challenges: AWS Builder (Lambda, Bedrock, Cognito), Open Source (MIT, new repo)
 
 ## Layout
@@ -49,6 +50,8 @@ HR_ENV=staging SNAPSHOT_FROM=2026-09-22 SNAPSHOT_TO=2026-09-30 deploy/deploy.sh 
 ```
 
 The script cross-compiles the server for arm64, creates a private `trackside-<account>-<region>` bucket for the Lambda zip and the snapshot, and deploys the `trackside-mcp` CloudFormation stack: one Lambda (`provided.al2023`, arm64) behind an API Gateway HTTP API with throttling, and a Cognito user pool with its OAuth domain and app clients. Everything is named `trackside-*` and tagged `Project=trackside`. Set `TRACKSIDE_ROLE_ARN` to run every AWS call as a deploy role. On Lambda the server is stateless, because consecutive requests can reach different instances.
+
+To serve it on your own hostname, run the script once with `TRACKSIDE_DOMAIN=mcp.example.com` (and `TRACKSIDE_HOSTED_ZONE_ID` when the domain's DNS is in Route 53 in the same account). It requests a DNS-validated ACM certificate and adds an API Gateway custom domain; with Route 53 it writes both DNS records itself, otherwise it prints the certificate's validation CNAME and, once the certificate is issued and you rerun it, the CNAME for the hostname. Later deploys keep the domain, and the execute-api URL keeps working. In an account that has never had an API Gateway custom domain, create API Gateway's service-linked role once as an admin first (`aws iam create-service-linked-role --aws-service-name ops.apigateway.amazonaws.com`); the deploy role can't.
 
 ## Tools
 
