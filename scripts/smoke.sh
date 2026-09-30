@@ -14,7 +14,7 @@
 # Against a server with OAuth on, pass a token with both scopes and the script also checks the
 # 401 challenge and the metadata documents:
 #   MCP_TOKEN=$(scripts/token.sh) scripts/smoke.sh
-set -uo pipefail
+set -uo pipefail +B  # macOS bash 3.2 brace-expands {"a":1,"b":2} inside "$(...)"
 
 MCP_URL="${MCP_URL:-https://f534rx2db4.execute-api.ap-southeast-2.amazonaws.com/mcp}"
 if [[ "${1:-}" == "--fixture" ]]; then
