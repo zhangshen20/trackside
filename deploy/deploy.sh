@@ -5,6 +5,10 @@
 #   HR_ENV=staging SNAPSHOT_FROM=2026-09-22 SNAPSHOT_TO=2026-09-30 deploy/deploy.sh
 #                                    also rebuild the data snapshot from the racing archive
 #                                    (HR_ENV names the archive buckets, hr-<HR_ENV>-*)
+#   TRACKSIDE_DOMAIN=mcp.racingaidataset.com.au deploy/deploy.sh
+#                                    also serve the API on that hostname (see "Custom domain"
+#                                    below); set TRACKSIDE_HOSTED_ZONE_ID when its DNS is in
+#                                    Route 53 in this account. Later deploys keep the domain.
 #
 # Needs: cargo, cargo-zigbuild (pip install cargo-zigbuild ziglang), the aarch64 Rust target,
 # the AWS CLI, zip. When TRACKSIDE_ROLE_ARN is set, every AWS call runs as that role.
@@ -54,10 +58,50 @@ SHA="$(sha256sum target/lambda/trackside-mcp.zip | cut -c1-16)"
 CODE_KEY="lambda/trackside-mcp-$SHA.zip"
 aws s3 cp --quiet target/lambda/trackside-mcp.zip "s3://$BUCKET/$CODE_KEY"
 
+# Custom domain: a DNS-validated ACM certificate, requested once and reused. With a Route 53
+# zone the validation record is written here; otherwise it is printed for the DNS provider,
+# and the stack goes ahead without the domain until the certificate is issued.
+DOMAIN_PARAMS=() DOMAIN_ON=""
+if [[ -n "${TRACKSIDE_DOMAIN:-}" ]]; then
+  CERT="$(aws acm list-certificates --certificate-statuses ISSUED PENDING_VALIDATION \
+    --query "CertificateSummaryList[?DomainName=='$TRACKSIDE_DOMAIN'].CertificateArn | [0]" --output text)"
+  if [[ -z "$CERT" || "$CERT" == None ]]; then
+    CERT="$(aws acm request-certificate --domain-name "$TRACKSIDE_DOMAIN" --validation-method DNS \
+      --idempotency-token trackside --tags Key=Project,Value=trackside \
+      --query CertificateArn --output text)"
+    echo "requested certificate $CERT"
+  fi
+  RECORD=""
+  for _ in $(seq 10); do  # the validation record appears a few seconds after the request
+    RECORD="$(aws acm describe-certificate --certificate-arn "$CERT" \
+      --query 'Certificate.DomainValidationOptions[0].ResourceRecord.[Name,Value]' --output text)"
+    [[ -n "$RECORD" && "$RECORD" != None ]] && break
+    sleep 3
+  done
+  read -r VNAME VVALUE <<<"$RECORD"
+  if [[ -n "${TRACKSIDE_HOSTED_ZONE_ID:-}" ]]; then
+    aws route53 change-resource-record-sets --hosted-zone-id "$TRACKSIDE_HOSTED_ZONE_ID" \
+      --change-batch "{\"Changes\":[{\"Action\":\"UPSERT\",\"ResourceRecordSet\":{\"Name\":\"$VNAME\",\"Type\":\"CNAME\",\"TTL\":300,\"ResourceRecords\":[{\"Value\":\"$VVALUE\"}]}}]}" >/dev/null
+  fi
+  CERT_STATUS=""
+  for _ in $(seq 20); do
+    CERT_STATUS="$(aws acm describe-certificate --certificate-arn "$CERT" --query Certificate.Status --output text)"
+    [[ "$CERT_STATUS" == ISSUED ]] && break
+    sleep 15
+  done
+  if [[ "$CERT_STATUS" == ISSUED ]]; then
+    DOMAIN_ON=1
+    DOMAIN_PARAMS=("DomainName=$TRACKSIDE_DOMAIN" "CertificateArn=$CERT" "HostedZoneId=${TRACKSIDE_HOSTED_ZONE_ID:-}")
+  else
+    echo "certificate for $TRACKSIDE_DOMAIN is $CERT_STATUS; add this DNS record, then run deploy.sh again:" >&2
+    echo "  CNAME  $VNAME  ->  $VVALUE" >&2
+  fi
+fi
+
 aws cloudformation deploy --stack-name "$STACK" --template-file deploy/trackside.yaml \
   --capabilities CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset \
   --tags Project=trackside \
-  --parameter-overrides "ArtifactBucket=$BUCKET" "CodeKey=$CODE_KEY"
+  --parameter-overrides "ArtifactBucket=$BUCKET" "CodeKey=$CODE_KEY" ${DOMAIN_PARAMS[@]+"${DOMAIN_PARAMS[@]}"}
 
 # A new snapshot with unchanged code needs fresh instances to pick it up.
 FN="$(aws cloudformation describe-stacks --stack-name "$STACK" \
@@ -67,3 +111,8 @@ aws lambda update-function-configuration --function-name "$FN" \
 
 aws cloudformation describe-stacks --stack-name "$STACK" \
   --query "Stacks[0].Outputs[?OutputKey=='McpUrl'].OutputValue" --output text
+if [[ -n "$DOMAIN_ON" && -z "${TRACKSIDE_HOSTED_ZONE_ID:-}" ]]; then
+  HOSTNAME_TARGET="$(aws cloudformation describe-stacks --stack-name "$STACK" \
+    --query "Stacks[0].Outputs[?OutputKey=='RegionalHostname'].OutputValue" --output text)"
+  echo "at your DNS provider:  CNAME  $TRACKSIDE_DOMAIN  ->  $HOSTNAME_TARGET"
+fi
