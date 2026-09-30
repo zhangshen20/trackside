@@ -25,7 +25,7 @@ import urllib.parse
 import urllib.request
 import webbrowser
 
-MCP_URL = os.environ.get("MCP_URL", "https://f534rx2db4.execute-api.ap-southeast-2.amazonaws.com/mcp")
+MCP_URL = os.environ.get("MCP_URL", "https://mcp.racingaidataset.com.au/mcp")
 STACK = os.environ.get("STACK", "trackside-mcp")
 REGION = os.environ.get("AWS_REGION", "ap-southeast-2")
 REDIRECT = "http://localhost:6274/oauth/callback"
