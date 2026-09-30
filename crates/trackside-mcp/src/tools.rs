@@ -1,31 +1,45 @@
 //! The Trackside tool surface. Every tool answers in two layers: a short spoken-style text
 //! block for voice, and `structured_content` for screens and agents. No prices, ever.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{NaiveDate, Utc};
 use chrono_tz::Australia::Melbourne;
 use rmcp::{
-    handler::server::wrapper::Parameters, model::*, schemars, tool, tool_handler, tool_router,
-    ErrorData as McpError, ServerHandler,
+    handler::server::wrapper::Parameters, model::*, schemars, service::RequestContext, tool,
+    tool_handler, tool_router, ErrorData as McpError, RoleServer, ServerHandler,
 };
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::RwLock;
 
 use trackside_core::{
-    norm, spring_carnival_2026, venue_matches, Store, SOURCE_RACING_AUSTRALIA, SOURCE_SECTIONALS,
+    horse_key, looks_like_track_code, prize_total, spoken_money, spring_carnival_2026,
+    venue_matches, RaceCard, Record, Store, SOURCE_RACING_AUSTRALIA, SOURCE_SECTIONALS,
 };
+
+use crate::auth::Caller;
 
 #[derive(Clone)]
 pub struct Trackside {
     store: Arc<dyn Store>,
-    /// Horses the user follows. Shared by every session in this process for now; keyed by
-    /// account (and persisted) once OAuth lands.
+    /// Horses each user follows, keyed by the signed-in account (see `caller_key`). Held in
+    /// memory, so a cold start forgets it; durable storage is a separate change.
     stable: Stable,
 }
 
-pub type Stable = Arc<RwLock<Vec<String>>>;
+pub type Stable = Arc<RwLock<HashMap<String, Vec<String>>>>;
+
+/// Whose stable a request reads: the OAuth subject when the server checks tokens, or one
+/// shared list when it runs without auth (local development).
+fn caller_key(ctx: &RequestContext<RoleServer>) -> String {
+    ctx.extensions
+        .get::<http::request::Parts>()
+        .and_then(|p| p.extensions.get::<Caller>())
+        .map(|c| c.subject.clone())
+        .unwrap_or_else(|| "local".into())
+}
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DateArgs {
@@ -84,6 +98,55 @@ fn answer(spoken: String, structured: serde_json::Value) -> CallToolResult {
     let mut result = CallToolResult::success(vec![ContentBlock::text(spoken)]);
     result.structured_content = Some(structured);
     result
+}
+
+/// "the Manikato Stakes, a Group 1 race over 1200 metres": grade and class only when known,
+/// so an empty field never leaves a gap in the sentence.
+fn describe_race(card: &RaceCard) -> String {
+    let label = if !card.grade.is_empty() {
+        card.grade.as_str()
+    } else if card.class.len() <= 40 {
+        card.class.as_str()
+    } else {
+        ""
+    };
+    let kind = match label.chars().next() {
+        None => "a race".to_string(),
+        Some(c) if "AEIOUaeiou".contains(c) => format!("an {label} race"),
+        Some(_) => format!("a {label} race"),
+    };
+    let distance = card
+        .distance_m
+        .map(|d| format!(" over {d} metres"))
+        .unwrap_or_default();
+    let purse = prize_total(&card.prize)
+        .map(|n| format!(", worth {}", spoken_money(n)))
+        .unwrap_or_default();
+    format!("{kind}{distance}{purse}")
+}
+
+/// "a Good 4 track" for a track code we couldn't name drops the venue rather than read
+/// out letters like "CTRN".
+fn at_venue(venue: &str) -> String {
+    if venue.is_empty() || looks_like_track_code(venue) {
+        String::new()
+    } else {
+        format!(" at {venue}")
+    }
+}
+
+/// "good going 7 from 17, soft 5 from 13", leaving out conditions it has never raced on.
+fn going_records(records: &[(&str, &Record)]) -> String {
+    let said: Vec<_> = records
+        .iter()
+        .filter(|(_, r)| r.starts > 0)
+        .map(|(name, r)| format!("{name} {} from {}", r.wins, r.starts))
+        .collect();
+    if said.is_empty() {
+        String::new()
+    } else {
+        format!(" On {}.", said.join(", "))
+    }
 }
 
 fn fmt_len(m: Option<f64>) -> String {
@@ -178,14 +241,11 @@ impl Trackside {
             .map(|r| r.horse.clone())
             .collect();
         let mut spoken = format!(
-            "Race {} at {} is the {}, {} over {} metres, {} runners, jumping at {}.",
+            "Race {} at {} is the {}, {}. {} runners, jumping at {}.",
             card.race_number,
             args.venue,
             card.name,
-            card.class,
-            card.distance_m
-                .map(|d| d.to_string())
-                .unwrap_or_else(|| "an unlisted distance".into()),
+            describe_race(&card),
             runners,
             card.start_local
         );
@@ -256,12 +316,19 @@ impl Trackside {
                         .map(|m| format!("{m:.1} lengths off the winner"))
                         .unwrap_or_default()
                 };
+                let distance = s
+                    .distance_m
+                    .map(|d| format!(" over {d} m"))
+                    .unwrap_or_default();
+                let track = if s.condition.is_empty() {
+                    String::new()
+                } else {
+                    format!(" on a {} track", s.condition)
+                };
                 format!(
-                    "{} at {} over {} m on a {} track it {}{}",
+                    "{}{}{distance}{track} it {}{}",
                     s.date.format("%-d %b"),
-                    s.venue,
-                    s.distance_m.unwrap_or(0),
-                    s.condition,
+                    at_venue(&s.venue),
                     place,
                     if margin.is_empty() {
                         String::new()
@@ -272,9 +339,29 @@ impl Trackside {
             })
             .collect::<Vec<_>>()
             .join(". ");
+        let first_up = if form.first_up.starts > 0 {
+            format!(
+                " First-up {} from {}.",
+                form.first_up.wins, form.first_up.starts
+            )
+        } else {
+            String::new()
+        };
+        let going = going_records(&[
+            ("good going", &form.good),
+            ("soft", &form.soft),
+            ("heavy", &form.heavy),
+        ]);
+        let recent = if recent.is_empty() {
+            String::new()
+        } else {
+            format!(" Recent starts: {recent}.")
+        };
         let spoken = format!(
-            "{}, trained by {}. Career {}. First-up {} from {}; on good going {} from {}, soft {} from {}, heavy {} from {}. Recent starts: {}. Source: {SOURCE_RACING_AUSTRALIA}.",
-            form.horse, form.trainer, form.career.summary(), form.first_up.wins, form.first_up.starts, form.good.wins, form.good.starts, form.soft.wins, form.soft.starts, form.heavy.wins, form.heavy.starts, recent
+            "{}, trained by {}. Career {}.{first_up}{going}{recent} Source: {SOURCE_RACING_AUSTRALIA}.",
+            form.horse,
+            form.trainer,
+            form.career.summary()
         );
         Ok(answer(
             spoken,
@@ -308,11 +395,9 @@ impl Trackside {
             .into_iter()
             .find(|f| f.name.eq_ignore_ascii_case(&card.name) && f.date == date);
         let why = feature.map(|f| f.blurb.to_string()).unwrap_or_else(|| {
-            format!(
-                "A {} over {} metres.",
-                card.class,
-                card.distance_m.unwrap_or(0)
-            )
+            let mut d = describe_race(&card);
+            d[..1].make_ascii_uppercase();
+            format!("{d}.")
         });
         // Contenders on form: most wins in the last-10 string, ties broken by rating.
         let mut ranked: Vec<_> = card.runners.iter().filter(|r| !r.scratched).collect();
@@ -448,11 +533,24 @@ impl Trackside {
     )]
     async fn follow_horse(
         &self,
+        ctx: RequestContext<RoleServer>,
         Parameters(args): Parameters<HorseArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let name = args.horse.trim().to_string();
-        let mut stable = self.stable.write().await;
-        if !stable.iter().any(|h| h.eq_ignore_ascii_case(&name)) {
+        let Some(form) = self
+            .store
+            .horse_form(args.horse.trim())
+            .await
+            .map_err(internal)?
+        else {
+            return Ok(answer(
+                format!("I can't find a horse called {} in the form guide, so I haven't added it. Check the spelling, or ask me who's running in a race.", args.horse.trim()),
+                json!({ "found": false }),
+            ));
+        };
+        let name = form.horse;
+        let mut stables = self.stable.write().await;
+        let stable = stables.entry(caller_key(&ctx)).or_default();
+        if !stable.iter().any(|h| horse_key(h) == horse_key(&name)) {
             stable.push(name.clone());
         }
         Ok(answer(
@@ -461,7 +559,7 @@ impl Trackside {
                 stable.len(),
                 if stable.len() == 1 { "" } else { "s" }
             ),
-            json!({ "stable": *stable }),
+            json!({ "found": true, "stable": *stable }),
         ))
     }
 
@@ -470,10 +568,17 @@ impl Trackside {
     )]
     async fn my_stable(
         &self,
+        ctx: RequestContext<RoleServer>,
         Parameters(args): Parameters<DateArgs>,
     ) -> Result<CallToolResult, McpError> {
         let date = parse_date(&args.date)?;
-        let stable = self.stable.read().await.clone();
+        let stable = self
+            .stable
+            .read()
+            .await
+            .get(&caller_key(&ctx))
+            .cloned()
+            .unwrap_or_default();
         if stable.is_empty() {
             return Ok(answer(
                 "You aren't following any horses yet. Say 'follow' and a horse's name to start."
@@ -488,8 +593,41 @@ impl Trackside {
             let mut found = false;
             for m in &meetings {
                 for r in &m.races {
-                    if let Some(runner) = r.runners.iter().find(|x| norm(&x.horse) == norm(horse)) {
+                    if let Some(runner) = r
+                        .runners
+                        .iter()
+                        .find(|x| horse_key(&x.horse) == horse_key(horse))
+                    {
                         found = true;
+                        // A race already run reads as its result, not as an engagement.
+                        let result = self
+                            .store
+                            .race_result(date, &m.venue, r.race_number)
+                            .await
+                            .map_err(internal)?;
+                        let placing = result.as_ref().and_then(|res| {
+                            res.placings
+                                .iter()
+                                .find(|p| horse_key(&p.horse) == horse_key(horse))
+                        });
+                        if let Some(res) = &result {
+                            let outcome = match placing {
+                                Some(p) if p.position == 1 => "won".to_string(),
+                                Some(p) if p.position > 1 => {
+                                    format!("ran {}{}", p.position, ordinal(p.position))
+                                }
+                                _ => "ran unplaced".to_string(),
+                            };
+                            lines.push(format!(
+                                "{horse} {outcome} in race {} at {} ({}) on {}",
+                                r.race_number,
+                                m.venue,
+                                r.name,
+                                res.date.format("%-d %b")
+                            ));
+                            engagements.push(json!({ "horse": horse, "venue": m.venue, "race_number": r.race_number, "start_local": r.start_local, "finished": placing.map(|p| p.position) }));
+                            continue;
+                        }
                         lines.push(format!(
                             "{} runs in race {} at {} ({}) at {}, barrier {}, {} up",
                             horse,
@@ -516,7 +654,7 @@ impl Trackside {
                     .and_then(|f| f.starts.first().cloned());
                 match last {
                     Some(s) => lines.push(format!(
-                        "{} isn't engaged on {}; last start it {} at {} on {}",
+                        "{} isn't engaged on {}; last start it {}{} on {}",
                         horse,
                         date.format("%-d %b"),
                         s.finish
@@ -526,7 +664,7 @@ impl Trackside {
                                 format!("ran {}{}", f, ordinal(f))
                             })
                             .unwrap_or_else(|| "ran".into()),
-                        s.venue,
+                        at_venue(&s.venue),
                         s.date.format("%-d %b")
                     )),
                     None => lines.push(format!(
@@ -603,7 +741,12 @@ fn capitalise(s: &str) -> String {
 impl ServerHandler for Trackside {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::from_build_env())
+            .with_server_info({
+                let mut info = Implementation::from_build_env();
+                info.name = "trackside".into();
+                info.title = Some("Trackside".into());
+                info
+            })
             .with_instructions(
                 "Trackside is a form guide for Australian thoroughbred racing: meetings, race cards, horse form, results, sectional timing, jockey and trainer records and a Spring Carnival guide. It is a fan companion with no betting or prices; never ask it for odds or tips. Attribute facts to the source each answer names."
                     .to_string(),

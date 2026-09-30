@@ -9,7 +9,11 @@
 #
 # Checks initialize, tools/list (nine tools), a call to every tool, the error paths, and that no
 # answer mentions betting, odds or a bookmaker. Needs bash, curl and python3. Exits non-zero on
-# any failure. Set MCP_TOKEN to send "Authorization: Bearer $MCP_TOKEN" once OAuth is on.
+# any failure.
+#
+# Against a server with OAuth on, pass a token with both scopes and the script also checks the
+# 401 challenge and the metadata documents:
+#   MCP_TOKEN=$(scripts/token.sh) scripts/smoke.sh
 set -uo pipefail
 
 MCP_URL="${MCP_URL:-https://f534rx2db4.execute-api.ap-southeast-2.amazonaws.com/mcp}"
@@ -18,7 +22,7 @@ if [[ "${1:-}" == "--fixture" ]]; then
   : "${RESULT_DATE:=2026-09-26}" "${RESULT_VENUE:=Flemington}" "${RESULT_RACE:=7}"
   : "${PERSON:=J. Example}" "${ROLE:=jockey}"
 else
-  : "${DATE:=2026-09-27}" "${VENUE:=Caulfield}" "${RACE:=8}" "${HORSE:=Jimmysstar (NZ)}"
+  : "${DATE:=2026-09-27}" "${VENUE:=Caulfield}" "${RACE:=8}" "${HORSE:=Jimmysstar}"
   : "${RESULT_DATE:=$DATE}" "${RESULT_VENUE:=$VENUE}" "${RESULT_RACE:=$RACE}"
   : "${PERSON:=Ethan Brown}" "${ROLE:=jockey}"
 fi
@@ -45,7 +49,7 @@ if body.startswith("event:") or body.startswith("data:"):  # SSE framing from a 
 r = json.loads(body)
 text = " ".join(c.get("text", "") for c in r.get("result", {}).get("content", []))
 banned = re.compile(r"\b(odds|bet|bets|betting|wager|bookmaker|sportsbet|ladbrokes|tab|bet365|neds|pointsbet)\b", re.I)
-sys.exit(0 if eval(expr, {"r": r, "text": text, "banned": banned}) else 1)
+sys.exit(0 if eval(expr, {"r": r, "text": text, "banned": banned, "re": re}) else 1)
 PY
   then PASS=$((PASS + 1)); echo "ok    $1"
   else FAIL=$((FAIL + 1)); echo "FAIL  $1"; echo "      ${2:0:400}"
@@ -82,6 +86,13 @@ check "my_stable"       "$(call my_stable "{\"date\":\"$DATE\"}")" "$answered"
 check "race card text has no blank fields" "$(call get_race_card "{\"venue\":\"$VENUE\",\"race_number\":$RACE,\"date\":\"$DATE\"}")" \
   '"  " not in text and ", ," not in text'
 
+check "explain_race has no gaps" "$(call explain_race "{\"venue\":\"$VENUE\",\"race_number\":$RACE,\"date\":\"$DATE\"}")" \
+  '"  " not in text and "A  over" not in text'
+check "horse_form reads cleanly" "$(call horse_form "{\"horse\":\"$HORSE\"}")" \
+  '"  " not in text and "0 from 0" not in text and "Jump track" not in text and not re.search(r"\bat [A-Z]{4}\b", text)'
+check "follow_horse refuses an unknown horse" "$(call follow_horse '{"horse":"Not A Real Horse Zzq"}')" \
+  'r["result"]["structuredContent"]["found"] is False'
+
 # Error paths.
 check "unknown tool is an error" "$(call place_bet '{}')" '"error" in r or r["result"].get("isError")'
 check "missing argument is a tool error" "$(call get_race_card "{\"venue\":\"$VENUE\"}")" '"error" in r or r["result"].get("isError")'
@@ -89,6 +100,19 @@ check "unknown venue says not found" "$(call get_race_card "{\"venue\":\"Atlanti
   '"result" in r and r["result"]["structuredContent"]["found"] is False'
 check "bad date is rejected" "$(call list_meetings '{"date":"27/09/2026"}')" '"error" in r or r["result"].get("isError")'
 check "unknown method is -32601" "$(rpc '{"jsonrpc":"2.0","id":9,"method":"nope"}')" 'r["error"]["code"] == -32601'
+
+# OAuth, when the caller brought a token.
+status() { curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "$@"; }
+if [[ -n "${MCP_TOKEN:-}" ]]; then
+  BASE="${MCP_URL%/mcp}"
+  got=$(status -X POST "$MCP_URL" -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')
+  if [[ "$got" == 401 ]]; then PASS=$((PASS + 1)); echo "ok    no token gets 401"; else FAIL=$((FAIL + 1)); echo "FAIL  no token gets 401 (got $got)"; fi
+  check "protected-resource metadata" "$(curl -sS "$BASE/.well-known/oauth-protected-resource")" \
+    'r["resource"].endswith("/mcp") and r["authorization_servers"]'
+  check "authorization-server metadata lists S256" "$(curl -sS "$BASE/.well-known/oauth-authorization-server")" \
+    '"S256" in r["code_challenge_methods_supported"] and r["token_endpoint"].endswith("/oauth2/token")'
+fi
 
 echo
 echo "$PASS passed, $FAIL failed"

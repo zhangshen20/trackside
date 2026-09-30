@@ -92,6 +92,7 @@ pub fn form_from_json(json: &str, trainer: &str) -> Result<HorseForm> {
                 pos_400: s.pos_400.and_then(|v| u32::try_from(v).ok()),
             })
         })
+        .filter(|s: &PastStart| !s.is_trial())
         .collect();
     starts.sort_by_key(|s| std::cmp::Reverse(s.date));
     Ok(HorseForm {

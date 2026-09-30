@@ -18,6 +18,7 @@ fixtures/demo.json      a small demo fixture (synthetic names) for tests and loc
 deploy/                 CloudFormation stack (Lambda arm64 + API Gateway HTTP API) and deploy script
 docs/                   testing guide, friction log, product feedback, prior-work statement
 scripts/smoke.sh        protocol smoke test against a running server (see docs/testing.md)
+scripts/token.sh        a Cognito access token for the deployed stack, for the smoke test
 ```
 
 ## Run locally
@@ -36,6 +37,10 @@ TRACKSIDE_SNAPSHOT=snapshot.json.gz cargo run --release -p trackside-mcp
 
 `TRACKSIDE_STATELESS=1` runs the server the way Lambda does (no sessions, JSON responses).
 
+## Auth
+
+The deployed server is an OAuth 2.1 resource server in the shape Alexa+ expects: a Cognito user pool issues a client-credentials token for discovery (`trackside/mcp:service`) and an authorization-code + PKCE token for tool calls (`trackside/mcp:tools`). Requests without a token get `401` pointing at `/.well-known/oauth-protected-resource`, and the server publishes `/.well-known/oauth-authorization-server` for Cognito. Each signed-in user gets their own follow list. Locally, auth is off unless `TRACKSIDE_AUTH_ISSUER` is set; see `crates/trackside-mcp/src/auth.rs` and `docs/testing.md`.
+
 ## Deploy to AWS
 
 ```sh
@@ -43,7 +48,7 @@ pip install cargo-zigbuild ziglang awscli && rustup target add aarch64-unknown-l
 SNAPSHOT_FROM=2026-09-22 SNAPSHOT_TO=2026-09-29 deploy/deploy.sh   # prints the /mcp URL
 ```
 
-The script cross-compiles the server for arm64, creates a private `trackside-<account>-<region>` bucket for the Lambda zip and the snapshot, and deploys the `trackside-mcp` CloudFormation stack: one Lambda (`provided.al2023`, arm64) behind an API Gateway HTTP API with throttling. Everything is named `trackside-*` and tagged `Project=trackside`. Set `TRACKSIDE_ROLE_ARN` to run every AWS call as a deploy role. On Lambda the server is stateless, because consecutive requests can reach different instances.
+The script cross-compiles the server for arm64, creates a private `trackside-<account>-<region>` bucket for the Lambda zip and the snapshot, and deploys the `trackside-mcp` CloudFormation stack: one Lambda (`provided.al2023`, arm64) behind an API Gateway HTTP API with throttling, and a Cognito user pool with its OAuth domain and app clients. Everything is named `trackside-*` and tagged `Project=trackside`. Set `TRACKSIDE_ROLE_ARN` to run every AWS call as a deploy role. On Lambda the server is stateless, because consecutive requests can reach different instances.
 
 ## Tools
 

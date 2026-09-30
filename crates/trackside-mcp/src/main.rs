@@ -9,9 +9,13 @@
 //! `TRACKSIDE_BIND` (default `127.0.0.1:8000`) with sessions; `TRACKSIDE_STATELESS=1` gives the
 //! Lambda behaviour locally. The endpoint is `/mcp`; `/healthz` answers "ok".
 //!
-//! OAuth 2.1 (required by Alexa+) is the next milestone; until then the deployed endpoint is
-//! open, read-only and rate limited at the API.
+//! Auth: with `TRACKSIDE_AUTH_ISSUER` set, `/mcp` requires a Cognito access token and the
+//! server publishes OAuth metadata under `/.well-known/` (see `auth.rs`). Without it the
+//! endpoint is open, which is how it runs locally.
 
+mod auth;
+#[cfg(test)]
+mod tests;
 mod tools;
 
 use std::io::Read;
@@ -24,6 +28,7 @@ use rmcp::transport::streamable_http_server::{
 use tower_http::cors::CorsLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+use auth::Auth;
 use tools::{Stable, Trackside};
 use trackside_core::{FixtureStore, Store};
 
@@ -85,10 +90,49 @@ async fn main() -> Result<()> {
         .init();
 
     let store: Arc<dyn Store> = Arc::new(load_store().await?);
-    let stable: Stable = Default::default();
     let stateless = on_lambda || std::env::var("TRACKSIDE_STATELESS").is_ok_and(|v| v == "1");
-
+    let auth = Auth::from_env()?;
+    match &auth {
+        Some(_) => tracing::info!("OAuth required on /mcp"),
+        None if on_lambda => tracing::warn!("TRACKSIDE_AUTH_ISSUER unset: /mcp is open"),
+        None => {}
+    }
     let ct = tokio_util::sync::CancellationToken::new();
+    let app = build_app(
+        store,
+        Default::default(),
+        auth,
+        stateless,
+        on_lambda,
+        ct.clone(),
+    );
+
+    if on_lambda {
+        return lambda_http::run(app)
+            .await
+            .map_err(|e| anyhow::anyhow!("lambda runtime: {e}"));
+    }
+
+    let bind = std::env::var("TRACKSIDE_BIND").unwrap_or_else(|_| "127.0.0.1:8000".into());
+    tracing::info!(%bind, stateless, "trackside listening");
+    let listener = tokio::net::TcpListener::bind(&bind).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            ct.cancel();
+        })
+        .await?;
+    Ok(())
+}
+
+fn build_app(
+    store: Arc<dyn Store>,
+    stable: Stable,
+    auth: Option<Arc<Auth>>,
+    stateless: bool,
+    on_lambda: bool,
+    ct: tokio_util::sync::CancellationToken,
+) -> axum::Router {
     let mut config =
         StreamableHttpServerConfig::default().with_cancellation_token(ct.child_token());
     if stateless {
@@ -110,25 +154,33 @@ async fn main() -> Result<()> {
         config,
     );
 
-    let app = axum::Router::new()
-        .route("/healthz", axum::routing::get(|| async { "ok" }))
-        .nest_service("/mcp", service)
-        .layer(CorsLayer::permissive());
-
-    if on_lambda {
-        return lambda_http::run(app)
-            .await
-            .map_err(|e| anyhow::anyhow!("lambda runtime: {e}"));
-    }
-
-    let bind = std::env::var("TRACKSIDE_BIND").unwrap_or_else(|_| "127.0.0.1:8000".into());
-    tracing::info!(%bind, stateless, "trackside listening");
-    let listener = tokio::net::TcpListener::bind(&bind).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            let _ = tokio::signal::ctrl_c().await;
-            ct.cancel();
-        })
-        .await?;
-    Ok(())
+    let mcp = axum::Router::new().nest_service("/mcp", service);
+    let app = match auth {
+        None => mcp,
+        Some(auth) => {
+            use axum::routing::get;
+            mcp.layer(axum::middleware::from_fn_with_state(
+                auth.clone(),
+                auth::require_token,
+            ))
+            .merge(
+                axum::Router::new()
+                    .route(
+                        "/.well-known/oauth-protected-resource",
+                        get(auth::protected_resource),
+                    )
+                    .route(
+                        "/.well-known/oauth-protected-resource/mcp",
+                        get(auth::protected_resource),
+                    )
+                    .route(
+                        "/.well-known/oauth-authorization-server",
+                        get(auth::authorization_server),
+                    )
+                    .with_state(auth),
+            )
+        }
+    };
+    app.route("/healthz", axum::routing::get(|| async { "ok" }))
+        .layer(CorsLayer::permissive())
 }

@@ -8,4 +8,6 @@ pub mod model;
 pub mod store;
 
 pub use model::*;
-pub use store::{norm, venue_matches, Fixture, FixtureStore, Store};
+pub use store::{
+    horse_key, looks_like_track_code, norm, venue_matches, Fixture, FixtureStore, Store,
+};
