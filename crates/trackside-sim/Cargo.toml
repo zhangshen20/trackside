@@ -1,0 +1,26 @@
+[package]
+name = "trackside-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A web simulator of the Alexa+ experience for Trackside: Bedrock drives a conversation over the Trackside MCP server"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+aws-config.workspace = true
+aws-sdk-bedrockruntime = "1"
+aws-smithy-types = "1"
+base64 = "0.22"
+chrono.workspace = true
+chrono-tz.workspace = true
+lambda_http.workspace = true
+rand = "0.8"
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

@@ -6,7 +6,8 @@ Ask Alexa+ what racing is on, who is in the Caulfield Cup, how a horse has been 
 
 - Track: Alexa+ (MCP server, Streamable HTTP, MCP spec 2025-11-25)
 - Live endpoint: `https://mcp.racingaidataset.com.au/mcp` (OAuth 2.1, see Auth)
-- Mini-challenges: AWS Builder (Lambda, Bedrock, Cognito), Open Source (MIT, new repo)
+- Simulator: `https://mcp.racingaidataset.com.au/sim`, a simulated Alexa+ experience (see Simulator)
+- Mini-challenges: AWS Builder (Lambda, API Gateway, Cognito, Bedrock), Open Source (MIT, new repo)
 
 ## Layout
 
@@ -15,9 +16,10 @@ crates/trackside-core   domain model (odds-free) and the Store trait; JSON fixtu
 crates/trackside-ingest parsers for the archived fields, form, results and sectionals, and the snapshot builder (prices and bookmaker names dropped)
 crates/trackside-snapshot  CLI: build a snapshot from the S3 archive (read-only) and publish it to Trackside's bucket
 crates/trackside-mcp    the MCP server: 9 tools over axum + rmcp; runs locally or on AWS Lambda
+crates/trackside-sim    the simulator: a web page plus a server where Claude on Amazon Bedrock drives the MCP server
 fixtures/demo.json      a small demo fixture (synthetic names) for tests and local runs
 deploy/                 CloudFormation stack (Lambda arm64 + API Gateway HTTP API) and deploy script
-docs/                   testing guide, friction log, product feedback, prior-work statement
+docs/                   testing guide, friction log, prior-work statement
 scripts/smoke.sh        protocol smoke test against a running server (see docs/testing.md)
 scripts/token.sh        a Cognito access token for the deployed stack, for the smoke test
 ```
@@ -37,6 +39,12 @@ TRACKSIDE_SNAPSHOT=snapshot.json.gz cargo run --release -p trackside-mcp
 ```
 
 `TRACKSIDE_STATELESS=1` runs the server the way Lambda does (no sessions, JSON responses).
+
+The simulator, against that local server (needs AWS credentials that can call Bedrock):
+
+```sh
+TRACKSIDE_SIM_TODAY=2026-09-26 cargo run -p trackside-sim   # open http://127.0.0.1:8001/sim
+```
 
 ## Auth
 
@@ -65,6 +73,16 @@ To serve it on your own hostname, run the script once with `TRACKSIDE_DOMAIN=mcp
 | `jockey_or_trainer_stats` | wins and places over a period |
 | `follow_horse` / `my_stable` | a watch list with engagements and latest results |
 | `carnival_guide` | the 2026 Spring Racing Carnival feature races |
+
+## Simulator
+
+The Alexa+ MCP toolkit only runs in the United States, so Trackside ships its own simulated Alexa+ experience for demos and for anyone testing from elsewhere. It is labelled as a simulation on the page.
+
+- **Voice in, voice out**: tap the mic and ask (browser speech recognition, `en-AU`), or type. The answer is spoken with the browser's Australian voice.
+- **A screen like an Echo Show**: each answer draws a card from the tool's structured content: the race card, a result with the fastest last 600 m, a horse's form with its records by going, the meetings, your stable.
+- **The same path Alexa+ takes**: "Link account" signs in on Cognito's page (authorization code + PKCE, exchanged server-side with the client secret, as Alexa+ account linking does). Each turn, a Claude model on Amazon Bedrock (Converse API, `au.` inference profile) reads the MCP server's own tool list, picks tools, and the simulator calls them on `/mcp` over Streamable HTTP with the user's token. The page lists every MCP call it made.
+
+`crates/trackside-sim/src/main.rs` documents its settings. The deploy script builds it as a second Lambda behind the same API, on `/sim`.
 
 ## Data
 

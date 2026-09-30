@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build and deploy the Trackside MCP server to AWS (Lambda arm64 + API Gateway HTTP API).
+# Build and deploy the Trackside MCP server to AWS (Lambda arm64 + API Gateway HTTP API), with
+# the web simulator of the Alexa+ experience under /sim.
 #
 #   deploy/deploy.sh                 build, upload, deploy the stack
 #   HR_ENV=staging SNAPSHOT_FROM=2026-09-22 SNAPSHOT_TO=2026-09-30 deploy/deploy.sh
@@ -9,6 +10,9 @@
 #                                    also serve the API on that hostname (see "Custom domain"
 #                                    below); set TRACKSIDE_HOSTED_ZONE_ID when its DNS is in
 #                                    Route 53 in this account. Later deploys keep the domain.
+#   TRACKSIDE_SIM_TODAY=2026-09-27 deploy/deploy.sh
+#                                    the date the simulator treats as today (for a demo on a
+#                                    snapshot of past racing); SIM_MODEL picks its Bedrock model
 #
 # Needs: cargo, cargo-zigbuild (pip install cargo-zigbuild ziglang), the aarch64 Rust target,
 # the AWS CLI, zip. When TRACKSIDE_ROLE_ARN is set, every AWS call runs as that role.
@@ -50,13 +54,19 @@ if [[ -n "${SNAPSHOT_FROM:-}" ]]; then
 fi
 
 TARGET=aarch64-unknown-linux-gnu
-cargo zigbuild --release -p trackside-mcp --target "$TARGET.2.34"
-mkdir -p target/lambda
-cp "target/$TARGET/release/trackside-mcp" target/lambda/bootstrap
-(cd target/lambda && rm -f trackside-mcp.zip && zip -q -9 trackside-mcp.zip bootstrap)
-SHA="$(sha256sum target/lambda/trackside-mcp.zip | cut -c1-16)"
-CODE_KEY="lambda/trackside-mcp-$SHA.zip"
-aws s3 cp --quiet target/lambda/trackside-mcp.zip "s3://$BUCKET/$CODE_KEY"
+cargo zigbuild --release -p trackside-mcp -p trackside-sim --target "$TARGET.2.34"
+# Each Lambda gets a zip holding its binary as `bootstrap`, uploaded under its content hash.
+upload_lambda() {
+  local name="$1" dir="target/lambda/$1"
+  rm -rf "$dir" && mkdir -p "$dir"
+  cp "target/$TARGET/release/$name" "$dir/bootstrap"
+  (cd "$dir" && zip -q -9 "$name.zip" bootstrap)
+  local key="lambda/$name-$(sha256sum "$dir/$name.zip" | cut -c1-16).zip"
+  aws s3 cp --quiet "$dir/$name.zip" "s3://$BUCKET/$key"
+  echo "$key"
+}
+CODE_KEY="$(upload_lambda trackside-mcp)"
+SIM_CODE_KEY="$(upload_lambda trackside-sim)"
 
 # Custom domain: a DNS-validated ACM certificate, requested once and reused. With a Route 53
 # zone the validation record is written here; otherwise it is printed for the DNS provider,
@@ -101,7 +111,9 @@ fi
 aws cloudformation deploy --stack-name "$STACK" --template-file deploy/trackside.yaml \
   --capabilities CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset \
   --tags Project=trackside \
-  --parameter-overrides "ArtifactBucket=$BUCKET" "CodeKey=$CODE_KEY" ${DOMAIN_PARAMS[@]+"${DOMAIN_PARAMS[@]}"}
+  --parameter-overrides "ArtifactBucket=$BUCKET" "CodeKey=$CODE_KEY" "SimCodeKey=$SIM_CODE_KEY" \
+    ${TRACKSIDE_SIM_TODAY+"SimToday=$TRACKSIDE_SIM_TODAY"} ${SIM_MODEL:+"SimModel=$SIM_MODEL"} \
+    ${DOMAIN_PARAMS[@]+"${DOMAIN_PARAMS[@]}"}
 
 # A new snapshot with unchanged code needs fresh instances to pick it up.
 FN="$(aws cloudformation describe-stacks --stack-name "$STACK" \
@@ -110,7 +122,7 @@ aws lambda update-function-configuration --function-name "$FN" \
   --description "Trackside MCP server (deployed $(date -u +%FT%TZ))" >/dev/null
 
 aws cloudformation describe-stacks --stack-name "$STACK" \
-  --query "Stacks[0].Outputs[?OutputKey=='McpUrl'].OutputValue" --output text
+  --query "Stacks[0].Outputs[?OutputKey=='McpUrl' || OutputKey=='SimUrl'].OutputValue" --output text
 if [[ -n "$DOMAIN_ON" && -z "${TRACKSIDE_HOSTED_ZONE_ID:-}" ]]; then
   HOSTNAME_TARGET="$(aws cloudformation describe-stacks --stack-name "$STACK" \
     --query "Stacks[0].Outputs[?OutputKey=='RegionalHostname'].OutputValue" --output text)"

@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trackside Simulator</title>
+<meta name="description" content="A simulated Alexa+ experience for the Trackside racing add-on">
+<style>
+  :root {
+    --bg: #0b1016;
+    --frame: #151c25;
+    --screen: #0f1620;
+    --panel: #18212d;
+    --line: #263244;
+    --text: #e8eef5;
+    --muted: #93a2b5;
+    --accent: #2fd0ff;
+    --accent-2: #1a8cff;
+    --good: #43d19e;
+    --warn: #ffc857;
+    --radius: 18px;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  button, input { font: inherit; color: inherit; }
+  .banner { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: 10px 16px; border-bottom: 1px solid var(--line); background: #0d141c; font-size: 14px; color: var(--muted); }
+  .banner strong { color: var(--text); }
+  .pill { display: inline-block; padding: 2px 10px; border: 1px solid var(--line); border-radius: 999px; font-size: 12px; color: var(--muted); }
+  .pill.sim { border-color: var(--warn); color: var(--warn); }
+  main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 40px; display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 20px; }
+  @media (max-width: 900px) { main { grid-template-columns: minmax(0, 1fr); } .screen { min-height: 320px; } .clock { font-size: 48px; } }
+
+  /* The device */
+  .device { background: var(--frame); border-radius: 28px; padding: 16px 16px 12px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
+  .screen { position: relative; background: var(--screen); border-radius: var(--radius); min-height: 430px; overflow: hidden; }
+  .screen-inner { padding: 22px; height: 100%; max-height: 560px; overflow: auto; }
+  .lightbar { height: 6px; margin: 12px auto 2px; width: 55%; border-radius: 6px; background: #1d2632; transition: background .3s, box-shadow .3s; }
+  .device[data-state="listening"] .lightbar { background: linear-gradient(90deg, var(--accent-2), var(--accent), var(--accent-2)); box-shadow: 0 0 18px var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+  .device[data-state="thinking"] .lightbar { background: linear-gradient(90deg, #1d2632, var(--accent), #1d2632); background-size: 200% 100%; animation: sweep 1s linear infinite; box-shadow: 0 0 10px var(--accent-2); }
+  .device[data-state="speaking"] .lightbar { background: var(--accent); box-shadow: 0 0 14px var(--accent); }
+  @keyframes pulse { 50% { opacity: .55; } }
+  @keyframes sweep { from { background-position: 200% 0; } to { background-position: 0 0; } }
+  @media (prefers-reduced-motion: reduce) { .lightbar { animation: none !important; } }
+
+  /* Idle screen */
+  .idle { display: grid; place-items: center; text-align: center; min-height: 390px; }
+  .clock { font-size: 64px; font-weight: 300; letter-spacing: 1px; }
+  .idle p { color: var(--muted); margin: 6px 0 18px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+  .chip { border: 1px solid var(--line); background: var(--panel); padding: 7px 14px; border-radius: 999px; cursor: pointer; font-size: 14px; }
+  .chip:hover { border-color: var(--accent); }
+
+  /* Cards */
+  .card h2 { margin: 0 0 4px; font-size: 24px; font-weight: 600; }
+  .card .sub { color: var(--muted); margin-bottom: 14px; font-size: 14px; }
+  .card .spoken { background: var(--panel); border-left: 3px solid var(--accent); padding: 10px 14px; border-radius: 8px; margin: 0 0 16px; }
+  .facts { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  .fact { background: var(--panel); border-radius: 10px; padding: 8px 12px; min-width: 88px; }
+  .fact b { display: block; font-size: 20px; font-weight: 600; }
+  .fact span { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  td { padding: 8px; border-bottom: 1px solid #1c2633; vertical-align: top; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.scratched td { color: var(--muted); text-decoration: line-through; }
+  .badge { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; background: rgba(47,208,255,.12); color: var(--accent); }
+  .badge.win { background: rgba(67,209,158,.14); color: var(--good); }
+  .list { display: grid; gap: 10px; }
+  .item { background: var(--panel); border-radius: 12px; padding: 12px 14px; }
+  .item .t { font-weight: 600; }
+  .item .m { color: var(--muted); font-size: 14px; }
+  .source { margin-top: 14px; color: var(--muted); font-size: 12px; }
+  .more { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+
+  /* Controls */
+  .controls { display: flex; gap: 10px; align-items: center; margin-top: 14px; }
+  .mic { width: 56px; height: 56px; flex: none; border-radius: 50%; border: 0; background: var(--accent-2); cursor: pointer; display: grid; place-items: center; }
+  .mic:disabled { background: #2a3544; cursor: not-allowed; }
+  .mic svg { width: 26px; height: 26px; fill: #fff; }
+  .device[data-state="listening"] .mic { background: var(--accent); }
+  .ask { flex: 1; min-width: 0; display: flex; gap: 8px; }
+  .ask input { flex: 1; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 12px 16px; }
+  .ask input:focus { outline: none; border-color: var(--accent); }
+  .ask button { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 0 16px; cursor: pointer; }
+
+  /* Side panel */
+  aside { display: grid; gap: 16px; align-content: start; }
+  .panel { background: var(--frame); border-radius: var(--radius); padding: 16px; }
+  .panel h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .link-row { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+  .btn { border: 0; background: var(--accent-2); color: #fff; padding: 9px 16px; border-radius: 999px; cursor: pointer; text-decoration: none; font-size: 14px; }
+  .btn.quiet { background: transparent; border: 1px solid var(--line); color: var(--text); }
+  .transcript { display: grid; gap: 8px; max-height: 360px; overflow: auto; }
+  .msg { padding: 8px 12px; border-radius: 12px; font-size: 14px; max-width: 92%; }
+  .msg.user { background: #1f3550; justify-self: end; }
+  .msg.assistant { background: var(--panel); }
+  .msg.error { background: #3a1f25; }
+  .trace { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); display: grid; gap: 6px; max-height: 220px; overflow: auto; }
+  .trace div { word-break: break-word; }
+  .trace .tool { color: var(--accent); }
+  .muted { color: var(--muted); font-size: 14px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="banner">
+  <div><strong>Trackside</strong> &middot; Australian racing form, by voice</div>
+  <div><span class="pill sim">Simulated Alexa+ experience</span> <span class="pill">No betting, no odds</span></div>
+</div>
+
+<main>
+  <section class="device" id="device" data-state="idle" aria-label="Simulated Echo Show">
+    <div class="screen"><div class="screen-inner" id="screen"></div></div>
+    <div class="lightbar" aria-hidden="true"></div>
+    <div class="controls">
+      <button class="mic" id="mic" title="Hold to talk, or click to start listening" aria-label="Talk">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
+      </button>
+      <form class="ask" id="ask">
+        <input id="q" autocomplete="off" placeholder="Ask about racing, e.g. who won race 8 at Caulfield on Saturday?" aria-label="Ask Trackside">
+        <button type="submit">Ask</button>
+      </form>
+    </div>
+  </section>
+
+  <aside>
+    <div class="panel">
+      <h3>Account</h3>
+      <div class="link-row" id="link-row"><span class="muted">Checking…</span></div>
+    </div>
+    <div class="panel">
+      <h3>Conversation</h3>
+      <div class="transcript" id="transcript"><div class="muted">Tap the mic or type a question.</div></div>
+    </div>
+    <div class="panel">
+      <h3>MCP tool calls</h3>
+      <div class="trace" id="trace"><div>None yet. Each call goes to the Trackside MCP server over Streamable HTTP.</div></div>
+    </div>
+  </aside>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const device = $("device"), screen = $("screen"), transcript = $("transcript"), trace = $("trace");
+  const history = [];
+  let linked = false, busy = false;
+
+  const SUGGESTIONS = [
+    "What racing is on this Saturday in Victoria?",
+    "Tell me about the Caulfield Cup",
+    "Who's in race 8 at Caulfield?",
+    "How has Jimmysstar been going?",
+    "Who ran home fastest in the last race at Caulfield?",
+    "Follow Extragalactic",
+    "How's my stable?",
+    "What's on in the Spring Carnival?",
+  ];
+
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const setState = (s) => { device.dataset.state = s; };
+  const fmtDate = (d) => { try { return new Date(d + "T00:00:00").toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" }); } catch { return d; } };
+  const rec = (r) => r ? `${r.wins}-${r.seconds}-${r.thirds} from ${r.starts}` : "";
+
+  function idle() {
+    const now = new Date();
+    screen.innerHTML = `<div class="idle"><div>
+      <div class="clock">${now.toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit" })}</div>
+      <p>Try asking</p>
+      <div class="chips">${SUGGESTIONS.slice(0, 6).map((s) => `<button class="chip">${esc(s)}</button>`).join("")}</div>
+    </div></div>`;
+    screen.querySelectorAll(".chip").forEach((b) => b.addEventListener("click", () => ask(b.textContent)));
+  }
+
+  // ---- Screen cards, one per tool, from the tool's structured content ----
+  const cards = {
+    get_race_card(s) {
+      const c = s.card || s; if (!c.runners) return null;
+      return `<h2>Race ${esc(c.race_number)}: ${esc(c.name)}</h2>
+        <div class="sub">${[c.grade || c.class, c.distance_m && c.distance_m + " m", c.start_local && "Jumps " + c.start_local].filter(Boolean).map(esc).join(" · ")}</div>
+        <table><thead><tr><th>No.</th><th>Horse</th><th class="num">Bar.</th><th class="num">Wt</th><th>Jockey</th><th>Trainer</th><th>Form</th></tr></thead><tbody>
+        ${c.runners.map((r) => `<tr class="${r.scratched ? "scratched" : ""}"><td>${esc(r.number)}</td><td>${esc(r.horse)}</td><td class="num">${esc(r.barrier)}</td><td class="num">${esc(r.weight_kg)}</td><td>${esc(r.jockey)}</td><td>${esc(r.trainer)}</td><td>${esc(r.last10)}</td></tr>`).join("")}
+        </tbody></table>`;
+    },
+    race_result(s) {
+      const r = s.result; if (!r) return null;
+      const f = r.fastest_last_600;
+      return `<h2>Result: ${esc(r.venue)} race ${esc(r.race_number)}</h2>
+        <div class="sub">${[fmtDate(r.date), r.track_condition, r.winning_time && "Time " + r.winning_time].filter(Boolean).map(esc).join(" · ")}</div>
+        ${f ? `<div class="facts"><div class="fact"><span>Fastest last 600 m</span><b>${esc(f.horse)}</b>${esc(f.last_600_s)} s</div></div>` : ""}
+        <table><thead><tr><th>Pos.</th><th>Horse</th><th>Jockey</th><th class="num">Margin</th></tr></thead><tbody>
+        ${(r.placings || []).map((p) => `<tr><td>${p.position === 1 ? '<span class="badge win">1st</span>' : esc(p.position)}</td><td>${esc(p.horse)}</td><td>${esc(p.jockey)}</td><td class="num">${p.margin_lengths != null ? esc(p.margin_lengths) + " L" : ""}</td></tr>`).join("")}
+        </tbody></table>`;
+    },
+    horse_form(s) {
+      const f = s.form; if (!f) return null;
+      const facts = [["Career", f.career], ["First up", f.first_up], ["Second up", f.second_up], ["Good", f.good], ["Soft", f.soft], ["Heavy", f.heavy]]
+        .filter(([, r]) => r && r.starts > 0)
+        .map(([n, r]) => `<div class="fact"><span>${n}</span><b>${r.wins}/${r.starts}</b>${esc(rec(r))}</div>`).join("");
+      return `<h2>${esc(f.horse)}</h2><div class="sub">Trained by ${esc(f.trainer)}</div>
+        <div class="facts">${facts}</div>
+        <table><thead><tr><th>Date</th><th>Venue</th><th class="num">Dist.</th><th>Track</th><th class="num">Fin.</th><th class="num">Margin</th><th class="num">Last 600</th></tr></thead><tbody>
+        ${(f.starts || []).slice(0, 8).map((x) => `<tr><td>${esc(fmtDate(x.date))}</td><td>${esc(x.venue)}</td><td class="num">${esc(x.distance_m)}</td><td>${esc(x.condition)}</td><td class="num">${x.finish === 1 ? '<span class="badge win">1st</span>' : esc(x.finish) + (x.starters ? "/" + esc(x.starters) : "")}</td><td class="num">${x.margin_lengths != null ? esc(x.margin_lengths) : ""}</td><td class="num">${x.last_600_s != null ? esc(x.last_600_s) + " s" : ""}</td></tr>`).join("")}
+        </tbody></table>`;
+    },
+    list_meetings(s) {
+      if (!s.meetings) return null;
+      return `<h2>Meetings, ${esc(fmtDate(s.date))}</h2><div class="list">
+        ${s.meetings.map((m) => `<div class="item"><div class="t">${esc(m.venue)} <span class="pill">${esc(m.state)}</span></div>
+          <div class="m">${[m.track_condition, m.weather, m.races && m.races.length + " races", m.races && m.races[0] && "first " + m.races[0].start_local].filter(Boolean).map(esc).join(" · ")}</div></div>`).join("") || '<div class="muted">No meetings.</div>'}
+      </div>`;
+    },
+    explain_race(s) {
+      if (!s.race) return null;
+      return `<h2>${esc(s.race)}</h2><p>${esc(s.why)}</p>
+        ${s.contenders && s.contenders.length ? `<div class="sub">Form horses to watch</div><div class="chips" style="justify-content:flex-start">${s.contenders.map((c) => `<button class="chip" data-q="How has ${esc(c)} been going?">${esc(c)}</button>`).join("")}</div>` : ""}`;
+    },
+    jockey_or_trainer_stats(s) {
+      const st = s.stats; if (!st) return null; const r = st.record || {};
+      const rate = r.starts ? Math.round((100 * r.wins) / r.starts) + "%" : "–";
+      return `<h2>${esc(st.name)}</h2><div class="sub">${esc(st.role)}${st.from ? " · from " + esc(st.from) : ""}${st.to ? " to " + esc(st.to) : ""}</div>
+        <div class="facts"><div class="fact"><span>Starts</span><b>${esc(r.starts)}</b></div><div class="fact"><span>Wins</span><b>${esc(r.wins)}</b></div><div class="fact"><span>Seconds</span><b>${esc(r.seconds)}</b></div><div class="fact"><span>Thirds</span><b>${esc(r.thirds)}</b></div><div class="fact"><span>Strike rate</span><b>${rate}</b></div></div>`;
+    },
+    my_stable(s) {
+      if (!s.stable) return null;
+      const eng = s.engagements || [];
+      return `<h2>My stable</h2><div class="sub">${esc(s.stable.length)} horse${s.stable.length === 1 ? "" : "s"} followed</div><div class="list">
+        ${s.stable.map((h) => { const e = eng.filter((x) => x.horse === h);
+          return `<div class="item"><div class="t">${esc(h)}</div><div class="m">${e.length ? e.map((x) => `${esc(x.venue)} race ${esc(x.race_number)}${x.start_local ? " at " + esc(x.start_local) : ""}${x.finished ? ` · finished ${x.finished === 1 ? '<span class="badge win">1st</span>' : esc(x.finished)}` : ""}`).join("; ") : "Not engaged " + esc(fmtDate(s.date))}</div></div>`; }).join("") || '<div class="muted">No horses yet. Say "follow" and a horse\'s name.</div>'}
+      </div>`;
+    },
+    follow_horse(s) { return s.stable ? cards.my_stable({ stable: s.stable, date: "" }) : null; },
+    carnival_guide(s) {
+      if (!s.races) return null;
+      return `<h2>Spring Racing Carnival 2026</h2><div class="list">
+        ${s.races.map((r) => `<div class="item"><div class="t">${esc(r.name)} <span class="badge">${esc(r.grade)}</span></div><div class="m">${esc(fmtDate(r.date))} · ${esc(r.venue)} · ${esc(r.distance_m)} m</div><div class="m">${esc(r.blurb)}</div></div>`).join("")}
+      </div>`;
+    },
+  };
+
+  function source(s) {
+    const src = s && s.source; if (!src) return "";
+    return `<div class="source">Source: ${esc(Array.isArray(src) ? src.join(", ") : src)}</div>`;
+  }
+
+  function show(reply) {
+    // The last tool with something to draw decides the screen.
+    const drawn = [...(reply.tools || [])].reverse().find((t) => !t.is_error && t.structured && cards[t.tool] && cards[t.tool](t.structured));
+    const body = drawn ? cards[drawn.tool](drawn.structured) + source(drawn.structured) : "";
+    screen.innerHTML = `<div class="card"><p class="spoken">${esc(reply.text)}</p>${body}</div>`;
+    screen.querySelectorAll("[data-q]").forEach((b) => b.addEventListener("click", () => ask(b.dataset.q)));
+    screen.scrollTop = 0;
+  }
+
+  function addMsg(role, text) {
+    if (transcript.querySelector(".muted")) transcript.innerHTML = "";
+    const div = document.createElement("div");
+    div.className = "msg " + role; div.textContent = text;
+    transcript.appendChild(div); transcript.scrollTop = transcript.scrollHeight;
+  }
+
+  function addTrace(tools) {
+    if (!tools || !tools.length) return;
+    if (trace.firstElementChild && trace.firstElementChild.textContent.startsWith("None yet")) trace.innerHTML = "";
+    for (const t of tools) {
+      const div = document.createElement("div");
+      div.innerHTML = `<span class="tool">${esc(t.tool)}</span>(${esc(JSON.stringify(t.input))})${t.is_error ? " → error" : ""}`;
+      trace.appendChild(div);
+    }
+    trace.scrollTop = trace.scrollHeight;
+  }
+
+  // ---- Speech ----
+  let voice = null;
+  function pickVoice() {
+    const vs = speechSynthesis.getVoices();
+    voice = vs.find((v) => v.lang === "en-AU") || vs.find((v) => v.lang.startsWith("en-")) || null;
+  }
+  if ("speechSynthesis" in window) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
+  function speak(text) {
+    if (!("speechSynthesis" in window)) { setState("idle"); return; }
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    if (voice) u.voice = voice; u.lang = voice ? voice.lang : "en-AU"; u.rate = 1.02;
+    u.onstart = () => setState("speaking");
+    u.onend = u.onerror = () => setState("idle");
+    speechSynthesis.speak(u);
+  }
+
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let recog = null;
+  if (Recognition) {
+    recog = new Recognition();
+    recog.lang = "en-AU"; recog.interimResults = true; recog.maxAlternatives = 1;
+    recog.onresult = (e) => {
+      const res = e.results[e.results.length - 1];
+      $("q").value = res[0].transcript;
+      if (res.isFinal) ask(res[0].transcript);
+    };
+    recog.onerror = recog.onend = () => { if (device.dataset.state === "listening") setState("idle"); };
+  } else {
+    $("mic").disabled = true; $("mic").title = "This browser has no speech recognition; type instead (Chrome supports it).";
+  }
+  $("mic").addEventListener("click", () => {
+    if (!recog || busy) return;
+    if (device.dataset.state === "listening") { recog.stop(); return; }
+    if ("speechSynthesis" in window) speechSynthesis.cancel();
+    $("q").value = ""; setState("listening");
+    try { recog.start(); } catch { /* already started */ }
+  });
+
+  // ---- Conversation ----
+  async function ask(text) {
+    text = (text || "").trim();
+    if (!text || busy) return;
+    if (!linked) { renderLinkNeeded(); return; }
+    busy = true; $("q").value = ""; setState("thinking");
+    addMsg("user", text); history.push({ role: "user", text });
+    try {
+      const resp = await fetch("/sim/api/chat", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ history: history.slice(-12) }) });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.status === 401) { history.pop(); linked = false; renderAccount(); renderLinkNeeded(data.message); setState("idle"); return; }
+      if (!resp.ok) throw new Error(data.message || "HTTP " + resp.status);
+      history.push({ role: "assistant", text: data.text });
+      addMsg("assistant", data.text); addTrace(data.tools); show(data); speak(data.text);
+    } catch (e) {
+      history.pop();
+      addMsg("error", "Sorry, something went wrong: " + e.message);
+      setState("idle");
+    } finally { busy = false; }
+  }
+  $("ask").addEventListener("submit", (e) => { e.preventDefault(); ask($("q").value); });
+
+  // ---- Account linking ----
+  let session = { linking: false, linked: false };
+  function renderAccount() {
+    const row = $("link-row");
+    if (!session.linking) { row.innerHTML = `<span class="muted">Local mode: no sign-in needed.</span>`; return; }
+    row.innerHTML = linked
+      ? `<span>Linked${session.who ? " as <b>" + esc(session.who) + "</b>" : ""}</span><button class="btn quiet" id="unlink">Unlink</button>`
+      : `<span class="muted">Link Trackside to ask about racing and keep a stable.</span><a class="btn" href="/sim/link">Link account</a>`;
+    const u = $("unlink");
+    if (u) u.addEventListener("click", async () => { await fetch("/sim/api/unlink", { method: "POST" }); linked = false; session.who = null; renderAccount(); idle(); });
+  }
+  function renderLinkNeeded(message) {
+    screen.innerHTML = `<div class="idle"><div><h2 style="margin:0 0 8px">Link your Trackside account</h2>
+      <p>${esc(message || "Like enabling an Alexa+ add-on, you sign in once and Trackside keeps your followed horses.")}</p>
+      <a class="btn" href="/sim/link">Link account</a></div></div>`;
+  }
+
+  async function init() {
+    idle();
+    setInterval(() => { if (screen.querySelector(".clock")) screen.querySelector(".clock").textContent = new Date().toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit" }); }, 15000);
+    const params = new URLSearchParams(location.search);
+    try { session = await (await fetch("/sim/api/session")).json(); } catch { /* offline */ }
+    linked = !!session.linked;
+    renderAccount();
+    if (params.get("link_error")) { renderLinkNeeded("Linking didn't finish (" + params.get("link_error") + "). Try again."); window.history.replaceState(null, "", "/sim"); }
+    else if (!linked) renderLinkNeeded();
+  }
+  init();
+})();
+</script>
+</body>
+</html>

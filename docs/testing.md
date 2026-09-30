@@ -96,3 +96,12 @@ From Amazon's Alexa+ MCP toolkit authentication docs, and how Trackside does eac
 | No dynamic client registration | Clients are created by the stack; secrets are read from Cognito, never committed |
 
 Not yet covered: MCP Apps visuals.
+
+## 4. Simulator
+
+`/sim` plays the Alexa+ side: Claude on Bedrock picks the tools and the simulator calls them on `/mcp` as the linked user.
+
+- `cargo test -p trackside-sim` covers the conversation loop (with a scripted model), the MCP client, PKCE and the cookies.
+- Locally: run the MCP server stateless on port 8000, then `TRACKSIDE_SIM_TODAY=2026-09-26 cargo run -p trackside-sim` and open `http://127.0.0.1:8001/sim`. Without Cognito settings it runs in local mode with no sign-in.
+- Deployed: open `https://mcp.racingaidataset.com.au/sim`, choose **Link account**, sign in, and ask the questions from section 2. Each answer should show a card, and the tool-call panel should list the MCP calls. Set `TRACKSIDE_SIM_TODAY` at deploy time to a date inside the snapshot so "today" and "Saturday" land on real racing.
+- A 502 whose message starts `Bedrock:` is Bedrock refusing the call (model access, quota); the page shows the message.
