@@ -179,6 +179,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-bedrockruntime"
+version = "1.147.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36e7de5d63ec9b699713b498b458720c5219ad7eb66b861e65fe51a21ab043df"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-sigv4",
+ "aws-smithy-async",
+ "aws-smithy-eventstream",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "http-body-util",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-s3"
 version = "1.150.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3295,6 +3323,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aws-config",
+ "aws-sdk-bedrockruntime",
  "aws-sdk-s3",
  "axum",
  "base64 0.22.1",
@@ -3318,6 +3347,30 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "trackside-core",
+]
+
+[[package]]
+name = "trackside-sim"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "aws-config",
+ "aws-sdk-bedrockruntime",
+ "aws-smithy-types",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "chrono-tz",
+ "lambda_http",
+ "rand 0.8.8",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

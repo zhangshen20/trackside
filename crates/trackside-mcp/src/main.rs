@@ -12,8 +12,12 @@
 //! Auth: with `TRACKSIDE_AUTH_ISSUER` set, `/mcp` requires a Cognito access token and the
 //! server publishes OAuth metadata under `/.well-known/` (see `auth.rs`). Without it the
 //! endpoint is open, which is how it runs locally.
+//!
+//! Bedrock: with `TRACKSIDE_BEDROCK_MODEL` set, `explain_race` has a Bedrock model reword its
+//! facts for the ear, falling back to its template sentence (see `summary.rs`).
 
 mod auth;
+mod summary;
 #[cfg(test)]
 mod tests;
 mod tools;
@@ -29,6 +33,7 @@ use tower_http::cors::CorsLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use auth::Auth;
+use summary::Summariser;
 use tools::{Stable, Trackside};
 use trackside_core::{FixtureStore, Store};
 
@@ -97,10 +102,12 @@ async fn main() -> Result<()> {
         None if on_lambda => tracing::warn!("TRACKSIDE_AUTH_ISSUER unset: /mcp is open"),
         None => {}
     }
+    let summariser = Summariser::from_env().await.map(Arc::new);
     let ct = tokio_util::sync::CancellationToken::new();
     let app = build_app(
         store,
         Default::default(),
+        summariser,
         auth,
         stateless,
         on_lambda,
@@ -128,6 +135,7 @@ async fn main() -> Result<()> {
 fn build_app(
     store: Arc<dyn Store>,
     stable: Stable,
+    summariser: Option<Arc<Summariser>>,
     auth: Option<Arc<Auth>>,
     stateless: bool,
     on_lambda: bool,
@@ -149,7 +157,13 @@ fn build_app(
         Err(_) => config,
     };
     let service = StreamableHttpService::new(
-        move || Ok(Trackside::new(store.clone(), stable.clone())),
+        move || {
+            Ok(Trackside::new(
+                store.clone(),
+                stable.clone(),
+                summariser.clone(),
+            ))
+        },
         LocalSessionManager::default().into(),
         config,
     );

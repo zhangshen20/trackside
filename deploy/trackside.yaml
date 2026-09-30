@@ -2,7 +2,9 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   Trackside MCP server for Alexa+: one arm64 Lambda behind an API Gateway HTTP API, serving an
   odds-free racing snapshot from Trackside's own bucket, with a Cognito user pool as its OAuth
-  2.1 authorization server. Every resource is named trackside-* and tagged Project=trackside.
+  2.1 authorization server, plus a web simulator of the Alexa+ experience under /sim (a second
+  Lambda that drives the MCP server with a Claude model on Amazon Bedrock). Every resource is
+  named trackside-* and tagged Project=trackside.
 
 Parameters:
   ArtifactBucket:
@@ -15,6 +17,28 @@ Parameters:
   SnapshotKey:
     Type: String
     Default: snapshots/latest.json.gz
+  BedrockModel:
+    Type: String
+    Default: au.anthropic.claude-haiku-4-5-20251001-v1:0
+    Description: >-
+      Bedrock inference profile that rewords explain_race for the ear. The au. profile keeps
+      requests in Australian regions. Empty turns Bedrock off (the tool uses its template).
+  SimCodeKey:
+    Type: String
+    Default: ""
+    Description: Key of the simulator's Lambda zip in ArtifactBucket. Empty leaves /sim out.
+  SimModel:
+    Type: String
+    Default: au.anthropic.claude-opus-5-5
+    Description: >-
+      Bedrock model or inference profile the simulator talks through. The au. profile keeps
+      inference in Australian regions.
+  SimToday:
+    Type: String
+    Default: ""
+    Description: >-
+      The date (YYYY-MM-DD) the simulator treats as today, for demos on a snapshot of past
+      racing. Empty means the real date in Melbourne.
   RateLimit:
     Type: Number
     Default: 10
@@ -48,6 +72,7 @@ Parameters:
 Conditions:
   HasDomain: !And [!Not [!Equals [!Ref DomainName, ""]], !Not [!Equals [!Ref CertificateArn, ""]]]
   HasZone: !And [!Condition HasDomain, !Not [!Equals [!Ref HostedZoneId, ""]]]
+  HasSim: !Not [!Equals [!Ref SimCodeKey, ""]]
 
 Resources:
   # OAuth 2.1 for Alexa+: a service client (client_credentials, discovery only) and a user
@@ -120,7 +145,16 @@ Resources:
       AllowedOAuthFlowsUserPoolClient: true
       AllowedOAuthFlows: [code]
       AllowedOAuthScopes: [openid, email, trackside/mcp:service, trackside/mcp:tools]
-      CallbackURLs: !Ref OAuthCallbackUrls
+      # Plus the simulator's account-linking callback on each hostname the API answers on.
+      CallbackURLs: !Split
+        - ","
+        - !Join
+          - ","
+          - - !Join [",", !Ref OAuthCallbackUrls]
+            - !If
+              - HasDomain
+              - !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/sim/callback,https://${DomainName}/sim/callback"
+              - !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/sim/callback"
       SupportedIdentityProviders: [COGNITO]
       PreventUserExistenceErrors: ENABLED
       EnableTokenRevocation: true
@@ -156,6 +190,13 @@ Resources:
               - Effect: Allow
                 Action: s3:GetObject
                 Resource: !Sub "arn:aws:s3:::${ArtifactBucket}/snapshots/*"
+              # explain_race: Converse through the inference profile, which routes to the
+              # Anthropic foundation models in the profile's regions.
+              - Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource:
+                  - !Sub "arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*"
+                  - "arn:aws:bedrock:*::foundation-model/anthropic.*"
       Tags: [{ Key: Project, Value: trackside }]
 
   Function:
@@ -183,6 +224,7 @@ Resources:
           # Cognito for exactly these.
           TRACKSIDE_SCOPE_SERVICE: trackside/mcp:service
           TRACKSIDE_SCOPE_TOOLS: trackside/mcp:tools
+          TRACKSIDE_BEDROCK_MODEL: !Ref BedrockModel
           RUST_LOG: info
       Tags: [{ Key: Project, Value: trackside }]
 
@@ -225,6 +267,107 @@ Resources:
     Type: AWS::Lambda::Permission
     Properties:
       FunctionName: !Ref Function
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*"
+
+  # The simulator: a web page and a small server under /sim that plays the Alexa+ side of the
+  # conversation. A Claude model on Bedrock picks the tools; the server calls them on the MCP
+  # server above over HTTPS with the linked user's Cognito token, just as Alexa+ would.
+  SimLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: HasSim
+    Properties:
+      LogGroupName: /aws/lambda/trackside-sim
+      RetentionInDays: 14
+      Tags: [{ Key: Project, Value: trackside }]
+
+  SimRole:
+    Type: AWS::IAM::Role
+    Condition: HasSim
+    Properties:
+      RoleName: trackside-sim-lambda
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: trackside-sim-lambda
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "${SimLogGroup.Arn}:*"
+              # A cross-region inference profile (au., global.) runs the model in other
+              # regions, so the foundation-model ARN is any region.
+              - Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource:
+                  - "arn:aws:bedrock:*::foundation-model/anthropic.*"
+                  - !Sub "arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*"
+      Tags: [{ Key: Project, Value: trackside }]
+
+  SimFunction:
+    Type: AWS::Lambda::Function
+    Condition: HasSim
+    DependsOn: SimLogGroup
+    Properties:
+      FunctionName: trackside-sim
+      Description: Trackside simulator (a simulated Alexa+ experience over the MCP server)
+      Runtime: provided.al2023
+      Architectures: [arm64]
+      Handler: bootstrap
+      MemorySize: 512
+      Timeout: 29
+      Role: !GetAtt SimRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref SimCodeKey
+      Environment:
+        Variables:
+          TRACKSIDE_SIM_MCP_URL: !If [HasDomain, !Sub "https://${DomainName}/mcp", !Sub "${Api.ApiEndpoint}/mcp"]
+          TRACKSIDE_SIM_MODEL: !Ref SimModel
+          TRACKSIDE_SIM_TODAY: !Ref SimToday
+          TRACKSIDE_SIM_AUTH_DOMAIN: !Sub "https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com"
+          TRACKSIDE_SIM_CLIENT_ID: !Ref UserClient
+          TRACKSIDE_SIM_CLIENT_SECRET: !GetAtt UserClient.ClientSecret
+          RUST_LOG: info
+      Tags: [{ Key: Project, Value: trackside }]
+
+  SimIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Condition: HasSim
+    Properties:
+      ApiId: !Ref Api
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt SimFunction.Arn
+      PayloadFormatVersion: "2.0"
+      TimeoutInMillis: 30000
+
+  SimRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: HasSim
+    Properties:
+      ApiId: !Ref Api
+      RouteKey: ANY /sim
+      Target: !Sub "integrations/${SimIntegration}"
+
+  SimProxyRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: HasSim
+    Properties:
+      ApiId: !Ref Api
+      RouteKey: ANY /sim/{proxy+}
+      Target: !Sub "integrations/${SimIntegration}"
+
+  SimInvokePermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasSim
+    Properties:
+      FunctionName: !Ref SimFunction
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*"
@@ -275,6 +418,10 @@ Outputs:
     Value: !GetAtt CustomDomain.RegionalDomainName
   FunctionName:
     Value: !Ref Function
+  SimUrl:
+    Condition: HasSim
+    Description: The simulated Alexa+ experience, for demos and testing.
+    Value: !If [HasDomain, !Sub "https://${DomainName}/sim", !Sub "${Api.ApiEndpoint}/sim"]
   OAuthDomain:
     Description: Cognito's authorize and token endpoints live here.
     Value: !Sub "https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com"
