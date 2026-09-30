@@ -32,7 +32,7 @@ AUTH=()
 [[ -n "${MCP_TOKEN:-}" ]] && AUTH=(-H "Authorization: Bearer $MCP_TOKEN")
 
 rpc() { # rpc <json body>  -> prints the response body
-  curl -sS --max-time 30 "$MCP_URL" "${AUTH[@]}" \
+  curl -sS --max-time 30 "$MCP_URL" ${AUTH[@]+"${AUTH[@]}"} \
     -H 'Content-Type: application/json' \
     -H 'Accept: application/json, text/event-stream' \
     -H 'MCP-Protocol-Version: 2025-11-25' \

@@ -68,6 +68,7 @@ async fn app(with_auth: bool) -> axum::Router {
     build_app(
         store,
         Default::default(),
+        None,
         auth,
         true,
         true,

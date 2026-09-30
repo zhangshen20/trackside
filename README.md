@@ -19,7 +19,7 @@ crates/trackside-mcp    the MCP server: 9 tools over axum + rmcp; runs locally o
 crates/trackside-sim    the simulator: a web page plus a server where Claude on Amazon Bedrock drives the MCP server
 fixtures/demo.json      a small demo fixture (synthetic names) for tests and local runs
 deploy/                 CloudFormation stack (Lambda arm64 + API Gateway HTTP API) and deploy script
-docs/                   testing guide, friction log, prior-work statement
+docs/                   testing guide, friction log, product feedback (draft), prior-work statement
 scripts/smoke.sh        protocol smoke test against a running server (see docs/testing.md)
 scripts/token.sh        a Cognito access token for the deployed stack, for the smoke test
 ```
@@ -83,6 +83,10 @@ The Alexa+ MCP toolkit only runs in the United States, so Trackside ships its ow
 - **The same path Alexa+ takes**: "Link account" signs in on Cognito's page (authorization code + PKCE, exchanged server-side with the client secret, as Alexa+ account linking does). Each turn, a Claude model on Amazon Bedrock (Converse API, `au.` inference profile) reads the MCP server's own tool list, picks tools, and the simulator calls them on `/mcp` over Streamable HTTP with the user's token. The page lists every MCP call it made.
 
 `crates/trackside-sim/src/main.rs` documents its settings. The deploy script builds it as a second Lambda behind the same API, on `/sim`.
+
+## Bedrock race explanations
+
+`explain_race` gathers its facts (the race, why it matters, conditions, the field's recent form) and, when `TRACKSIDE_BEDROCK_MODEL` is set, has a Bedrock model reword them into a few sentences a newcomer can follow by ear. The model sees only those facts, never prices; an answer that uses betting words, or a call that fails or takes more than six seconds, falls back to the tool's template sentence. The structured content says which one was used (`written_by`). The stack sets the model to Claude Haiku 4.5 through the `au.` inference profile, so requests stay in Australian regions (`BedrockModel` parameter; empty turns it off).
 
 ## Data
 

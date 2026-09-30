@@ -17,6 +17,12 @@ Parameters:
   SnapshotKey:
     Type: String
     Default: snapshots/latest.json.gz
+  BedrockModel:
+    Type: String
+    Default: au.anthropic.claude-haiku-4-5-20251001-v1:0
+    Description: >-
+      Bedrock inference profile that rewords explain_race for the ear. The au. profile keeps
+      requests in Australian regions. Empty turns Bedrock off (the tool uses its template).
   SimCodeKey:
     Type: String
     Default: ""
@@ -184,6 +190,13 @@ Resources:
               - Effect: Allow
                 Action: s3:GetObject
                 Resource: !Sub "arn:aws:s3:::${ArtifactBucket}/snapshots/*"
+              # explain_race: Converse through the inference profile, which routes to the
+              # Anthropic foundation models in the profile's regions.
+              - Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource:
+                  - !Sub "arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*"
+                  - "arn:aws:bedrock:*::foundation-model/anthropic.*"
       Tags: [{ Key: Project, Value: trackside }]
 
   Function:
@@ -211,6 +224,7 @@ Resources:
           # Cognito for exactly these.
           TRACKSIDE_SCOPE_SERVICE: trackside/mcp:service
           TRACKSIDE_SCOPE_TOOLS: trackside/mcp:tools
+          TRACKSIDE_BEDROCK_MODEL: !Ref BedrockModel
           RUST_LOG: info
       Tags: [{ Key: Project, Value: trackside }]
 

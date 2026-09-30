@@ -20,6 +20,7 @@ use trackside_core::{
 };
 
 use crate::auth::Caller;
+use crate::summary::Summariser;
 
 #[derive(Clone)]
 pub struct Trackside {
@@ -27,6 +28,8 @@ pub struct Trackside {
     /// Horses each user follows, keyed by the signed-in account (see `caller_key`). Held in
     /// memory, so a cold start forgets it; durable storage is a separate change.
     stable: Stable,
+    /// Rewords `explain_race` for the ear when Bedrock is configured (see `summary.rs`).
+    summariser: Option<Arc<Summariser>>,
 }
 
 pub type Stable = Arc<RwLock<HashMap<String, Vec<String>>>>;
@@ -155,8 +158,12 @@ fn fmt_len(m: Option<f64>) -> String {
 
 #[tool_router]
 impl Trackside {
-    pub fn new(store: Arc<dyn Store>, stable: Stable) -> Self {
-        Self { store, stable }
+    pub fn new(store: Arc<dyn Store>, stable: Stable, summariser: Option<Arc<Summariser>>) -> Self {
+        Self {
+            store,
+            stable,
+            summariser,
+        }
     }
 
     #[tool(
@@ -370,7 +377,7 @@ impl Trackside {
     }
 
     #[tool(
-        description = "Explain a race in plain language for a newcomer: what it is, why it matters and which runners bring the strongest form. No betting or prices. Use for 'tell me about the Caulfield Cup' or 'explain race 8'."
+        description = "Explain a race in plain language for a newcomer: what it is, why it matters and which runners bring the strongest form. No betting or prices. Use for 'tell me about the Caulfield Cup' or 'explain race 8'. Given only a race's name, find its venue, date and race number with list_meetings first."
     )]
     async fn explain_race(
         &self,
@@ -394,11 +401,14 @@ impl Trackside {
         let feature = spring_carnival_2026()
             .into_iter()
             .find(|f| f.name.eq_ignore_ascii_case(&card.name) && f.date == date);
-        let why = feature.map(|f| f.blurb.to_string()).unwrap_or_else(|| {
-            let mut d = describe_race(&card);
-            d[..1].make_ascii_uppercase();
-            format!("{d}.")
-        });
+        let why = feature
+            .as_ref()
+            .map(|f| f.blurb.to_string())
+            .unwrap_or_else(|| {
+                let mut d = describe_race(&card);
+                d[..1].make_ascii_uppercase();
+                format!("{d}.")
+            });
         // Contenders on form: most wins in the last-10 string, ties broken by rating.
         let mut ranked: Vec<_> = card.runners.iter().filter(|r| !r.scratched).collect();
         ranked.sort_by(|a, b| {
@@ -419,10 +429,39 @@ impl Trackside {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let spoken = format!("{}: {why} Track is {}. On recent form the ones to watch are {contenders}. Source: {SOURCE_RACING_AUSTRALIA}.", card.name, self.track_condition(date, &args.venue).await);
+        let track = self.track_condition(date, &args.venue).await;
+        let template = format!(
+            "{}: {why} Track is {track}. On recent form the ones to watch are {contenders}.",
+            card.name
+        );
+        // Bedrock gets the same facts the template uses, plus the field, and nothing else.
+        let facts = json!({
+            "race": card.name, "venue": args.venue, "date": date.format("%A %-d %B").to_string(),
+            "race_number": card.race_number, "distance_m": card.distance_m, "grade": card.grade,
+            "class": card.class, "prize_total": prize_total(&card.prize).map(spoken_money),
+            "why_it_matters": why, "track_condition": track,
+            "feature_race": feature.is_some(),
+            "strongest_recent_form": ranked.iter().take(3).map(|r| json!({
+                "horse": r.horse, "wins_in_recent_starts": r.last10.matches('1').count(),
+                "recent_starts": r.last10.chars().filter(|c| c.is_ascii_digit()).count(),
+                "jockey": r.jockey, "trainer": r.trainer, "barrier": r.barrier,
+            })).collect::<Vec<_>>(),
+            "field_size": ranked.len(),
+        });
+        let (explanation, written_by) = match &self.summariser {
+            None => (template, "template".to_string()),
+            Some(s) => match s.explain(&facts).await {
+                Ok(text) => (text, format!("bedrock:{}", s.model())),
+                Err(err) => {
+                    tracing::warn!(error = %err, "Bedrock explanation failed; using the template");
+                    (template, "template".to_string())
+                }
+            },
+        };
+        let spoken = format!("{explanation} Source: {SOURCE_RACING_AUSTRALIA}.");
         Ok(answer(
             spoken,
-            json!({ "found": true, "race": card.name, "why": why, "contenders": ranked.iter().take(3).map(|r| r.horse.clone()).collect::<Vec<_>>(), "source": SOURCE_RACING_AUSTRALIA }),
+            json!({ "found": true, "race": card.name, "why": why, "contenders": ranked.iter().take(3).map(|r| r.horse.clone()).collect::<Vec<_>>(), "explanation": explanation, "written_by": written_by, "facts": facts, "source": SOURCE_RACING_AUSTRALIA }),
         ))
     }
 

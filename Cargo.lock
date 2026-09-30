@@ -3323,6 +3323,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aws-config",
+ "aws-sdk-bedrockruntime",
  "aws-sdk-s3",
  "axum",
  "base64 0.22.1",
