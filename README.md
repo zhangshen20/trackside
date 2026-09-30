@@ -16,7 +16,8 @@ crates/trackside-snapshot  CLI: build a snapshot from the S3 archive (read-only)
 crates/trackside-mcp    the MCP server: 9 tools over axum + rmcp; runs locally or on AWS Lambda
 fixtures/demo.json      a small demo fixture (synthetic names) for tests and local runs
 deploy/                 CloudFormation stack (Lambda arm64 + API Gateway HTTP API) and deploy script
-docs/                   friction log, product feedback, prior-work statement
+docs/                   testing guide, friction log, product feedback, prior-work statement
+scripts/smoke.sh        protocol smoke test against a running server (see docs/testing.md)
 ```
 
 ## Run locally
