@@ -5,3 +5,4 @@
 /data
 snapshot*.json
 snapshot*.json.gz
+__pycache__/
