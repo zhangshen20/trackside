@@ -159,6 +159,10 @@ Resources:
           TRACKSIDE_AUTH_ISSUER: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
           TRACKSIDE_AUTH_DOMAIN: !Sub "https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com"
           TRACKSIDE_AUTH_CLIENTS: !Join [",", [!Ref ServiceClient, !Ref UserClient, !Ref SmokeClient]]
+          # Cognito's names for the scopes; clients read them from the metadata and must ask
+          # Cognito for exactly these.
+          TRACKSIDE_SCOPE_SERVICE: trackside/mcp:service
+          TRACKSIDE_SCOPE_TOOLS: trackside/mcp:tools
           RUST_LOG: info
       Tags: [{ Key: Project, Value: trackside }]
 

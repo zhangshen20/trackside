@@ -17,7 +17,8 @@
 //! - `TRACKSIDE_AUTH_ISSUER`: the user pool issuer, `https://cognito-idp.<region>.amazonaws.com/<pool id>`
 //! - `TRACKSIDE_AUTH_DOMAIN`: the pool's OAuth domain, `https://<prefix>.auth.<region>.amazoncognito.com`
 //! - `TRACKSIDE_AUTH_CLIENTS`: comma-separated app client ids whose tokens are accepted
-//! - `TRACKSIDE_SCOPE_SERVICE`, `TRACKSIDE_SCOPE_TOOLS`: scope names, default `mcp:service`
+//! - `TRACKSIDE_SCOPE_SERVICE`, `TRACKSIDE_SCOPE_TOOLS`: scope names as the authorization server
+//!   issues them (the stack sets `trackside/mcp:service` and `trackside/mcp:tools`), default `mcp:service`
 //!   and `mcp:tools`. Cognito prefixes custom scopes with the resource server
 //!   (`trackside/mcp:tools`); either form matches.
 //! - `TRACKSIDE_PUBLIC_URL`: the public base URL, when the Host header isn't it.
