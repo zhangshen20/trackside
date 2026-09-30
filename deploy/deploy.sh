@@ -13,6 +13,7 @@
 #   TRACKSIDE_SIM_TODAY=2026-09-27 deploy/deploy.sh
 #                                    the date the simulator treats as today (for a demo on a
 #                                    snapshot of past racing); SIM_MODEL picks its Bedrock model
+#                                    (default Claude Haiku 4.5, the au. profile)
 #
 # Needs: cargo, cargo-zigbuild (pip install cargo-zigbuild ziglang), the aarch64 Rust target,
 # the AWS CLI, zip. When TRACKSIDE_ROLE_ARN is set, every AWS call runs as that role.
@@ -112,7 +113,7 @@ aws cloudformation deploy --stack-name "$STACK" --template-file deploy/trackside
   --capabilities CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset \
   --tags Project=trackside \
   --parameter-overrides "ArtifactBucket=$BUCKET" "CodeKey=$CODE_KEY" "SimCodeKey=$SIM_CODE_KEY" \
-    ${TRACKSIDE_SIM_TODAY+"SimToday=$TRACKSIDE_SIM_TODAY"} ${SIM_MODEL:+"SimModel=$SIM_MODEL"} \
+    ${TRACKSIDE_SIM_TODAY+"SimToday=$TRACKSIDE_SIM_TODAY"} "SimModel=${SIM_MODEL:-au.anthropic.claude-haiku-4-5-20251001-v1:0}" \
     ${DOMAIN_PARAMS[@]+"${DOMAIN_PARAMS[@]}"}
 
 # A new snapshot with unchanged code needs fresh instances to pick it up.
