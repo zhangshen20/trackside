@@ -45,6 +45,8 @@ Transport **Streamable HTTP**, URL as above, Connect. Then:
 | `follow_horse` then `my_stable` | `{"horse":"Extragalactic"}`, then `{"date":"2026-09-27"}` |
 | `carnival_guide` | `{}` |
 
+The quickest real sign-in is `scripts/signin_check.py` on the Mac (stop Inspector first): it opens Cognito's page in the browser, and after you sign in or sign up it exchanges the code with PKCE and calls `follow_horse` and `my_stable` as that user.
+
 With OAuth on, Inspector's **Auth** panel runs the authorization-code + PKCE flow from the server's metadata. Give it the stack's `UserClientId` and that client's secret (`aws cognito-idp describe-user-pool-client`), sign up with an email on Cognito's page, and the tools run as that user. `http://localhost:6274/oauth/callback` is already an allowed redirect. That is the quickest way to prove discovery works before Alexa+ sees it.
 
 ## 2. Natural-language check with a real model
