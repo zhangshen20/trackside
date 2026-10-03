@@ -29,10 +29,11 @@ Parameters:
     Description: Key of the simulator's Lambda zip in ArtifactBucket. Empty leaves /sim out.
   SimModel:
     Type: String
-    Default: au.anthropic.claude-opus-5-5
+    Default: au.anthropic.claude-haiku-4-5-20251001-v1:0
     Description: >-
       Bedrock model or inference profile the simulator talks through. The au. profile keeps
-      inference in Australian regions.
+      inference in Australian regions; the same model as BedrockModel means one Bedrock quota
+      covers both.
   SimToday:
     Type: String
     Default: ""
@@ -191,12 +192,13 @@ Resources:
                 Action: s3:GetObject
                 Resource: !Sub "arn:aws:s3:::${ArtifactBucket}/snapshots/*"
               # explain_race: Converse through the inference profile, which routes to the
-              # Anthropic foundation models in the profile's regions.
+              # Anthropic or Amazon Nova foundation models in the profile's regions.
               - Effect: Allow
                 Action: bedrock:InvokeModel
                 Resource:
                   - !Sub "arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*"
                   - "arn:aws:bedrock:*::foundation-model/anthropic.*"
+                  - "arn:aws:bedrock:*::foundation-model/amazon.nova-*"
       Tags: [{ Key: Project, Value: trackside }]
 
   Function:
@@ -307,6 +309,7 @@ Resources:
                 Action: bedrock:InvokeModel
                 Resource:
                   - "arn:aws:bedrock:*::foundation-model/anthropic.*"
+                  - "arn:aws:bedrock:*::foundation-model/amazon.nova-*"
                   - !Sub "arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*"
       Tags: [{ Key: Project, Value: trackside }]
 

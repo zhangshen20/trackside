@@ -14,10 +14,10 @@
 //! Configuration (environment):
 //!
 //! - `TRACKSIDE_SIM_MCP_URL`: the MCP endpoint (default `http://127.0.0.1:8000/mcp`)
-//! - `TRACKSIDE_SIM_MODEL`: Bedrock model or inference profile (default `au.anthropic.claude-opus-5-5`)
-//! - `TRACKSIDE_SIM_MODEL_FIELDS`: extra model request fields as JSON (default
-//!   `{"output_config":{"effort":"low"}}`, since a voice answer should come back quickly);
-//!   `none` sends none
+//! - `TRACKSIDE_SIM_MODEL`: Bedrock model or inference profile (default `au.anthropic.claude-haiku-4-5-20251001-v1:0`, the
+//!   model `explain_race` uses too, so one Bedrock quota covers both)
+//! - `TRACKSIDE_SIM_MODEL_FIELDS`: extra model request fields as JSON, e.g.
+//!   `{"output_config":{"effort":"low"}}` for a model that takes an effort setting
 //! - `TRACKSIDE_SIM_TODAY`: the date the assistant treats as today (default: today in
 //!   Melbourne), for demos on a snapshot of past racing
 //! - `TRACKSIDE_SIM_AUTH_DOMAIN`, `TRACKSIDE_SIM_CLIENT_ID`, `TRACKSIDE_SIM_CLIENT_SECRET`:
@@ -84,14 +84,13 @@ async fn main() -> Result<()> {
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
     let aws = aws_config::load_from_env().await;
     let extra = match env("TRACKSIDE_SIM_MODEL_FIELDS").as_deref() {
-        Some("none") => None,
         Some(json) => Some(serde_json::from_str(json)?),
-        None => Some(json!({"output_config": {"effort": "low"}})),
+        None => None,
     };
     let model = Bedrock {
         client: aws_sdk_bedrockruntime::Client::new(&aws),
         model_id: env("TRACKSIDE_SIM_MODEL")
-            .unwrap_or_else(|| "au.anthropic.claude-opus-5-5".into()),
+            .unwrap_or_else(|| "au.anthropic.claude-haiku-4-5-20251001-v1:0".into()),
         extra,
     };
     let link = match (
