@@ -192,12 +192,13 @@ Resources:
                 Action: s3:GetObject
                 Resource: !Sub "arn:aws:s3:::${ArtifactBucket}/snapshots/*"
               # explain_race: Converse through the inference profile, which routes to the
-              # Anthropic foundation models in the profile's regions.
+              # Anthropic or Amazon Nova foundation models in the profile's regions.
               - Effect: Allow
                 Action: bedrock:InvokeModel
                 Resource:
                   - !Sub "arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*"
                   - "arn:aws:bedrock:*::foundation-model/anthropic.*"
+                  - "arn:aws:bedrock:*::foundation-model/amazon.nova-*"
       Tags: [{ Key: Project, Value: trackside }]
 
   Function:
@@ -308,6 +309,7 @@ Resources:
                 Action: bedrock:InvokeModel
                 Resource:
                   - "arn:aws:bedrock:*::foundation-model/anthropic.*"
+                  - "arn:aws:bedrock:*::foundation-model/amazon.nova-*"
                   - !Sub "arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*"
       Tags: [{ Key: Project, Value: trackside }]
 
