@@ -453,7 +453,7 @@ impl Trackside {
             Some(s) => match s.explain(&facts).await {
                 Ok(text) => (text, format!("bedrock:{}", s.model())),
                 Err(err) => {
-                    tracing::warn!(error = %err, "Bedrock explanation failed; using the template");
+                    tracing::warn!(error = ?err, "Bedrock explanation failed; using the template");
                     (template, "template".to_string())
                 }
             },
