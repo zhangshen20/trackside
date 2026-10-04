@@ -30,7 +30,7 @@ pub fn meeting_from_fields(json: &str) -> Result<Meeting> {
             distance_m: r.distance_m.and_then(|d| u32::try_from(d).ok()),
             class: without_bookmakers(&r.conditions),
             prize: without_bookmakers(&r.prize),
-            grade: grade_from(&r.race_name, &r.conditions),
+            grade: grade_from(&r.race_name, &r.conditions, &f.state),
             runners: r
                 .runners
                 .iter()
@@ -148,10 +148,29 @@ fn split_condition(s: &str) -> String {
     }
 }
 
+/// Words that say a race name is still carrying a wagering message once the known brands
+/// and products are gone. A name with one of these left in it is dropped whole, and the
+/// server speaks the race by its number instead.
+const WAGERING_WORDS: &[&str] = &[
+    "odds", "bet", "bets", "betting", "wager", "wagering", "punt", "punter", "punters", "bookie",
+    "bookies", "tote", "multi",
+];
+
 /// The race's name without wagering sponsors. Racing NSW and Queensland publish names in
 /// capitals ("TAB EPSOM"); those are set in title case so a screen shows "Epsom".
 fn race_name(raw: &str) -> String {
     let name = without_bookmakers(raw);
+    let wagering = name.split_whitespace().any(|w| {
+        let bare: String = w
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_ascii_lowercase();
+        WAGERING_WORDS.contains(&bare.as_str())
+    });
+    if wagering {
+        return String::new();
+    }
     if name.chars().any(|c| c.is_lowercase()) {
         name
     } else {
@@ -164,86 +183,91 @@ fn race_name(raw: &str) -> String {
 /// grade and its conditions text is usually empty, so the name is what there is to go on.
 /// Only Group 1 is listed: a wrong grade is worse than none, and the Group 1 label is the
 /// one a listener asks about ("is the Epsom a Group 1?").
-const GROUP_ONE_RACES: &[&str] = &[
+///
+/// Some names are run in two states at different grades: Randwick's Queen Elizabeth Stakes
+/// is a Group 1 and Flemington's a Group 3. Those carry the state whose race is the Group 1;
+/// "" is a name that is one race wherever it is run.
+const GROUP_ONE_RACES: &[(&str, &str)] = &[
     // New South Wales
-    "goldenslipper",
-    "doncaster",
-    "queenelizabethstakes",
-    "sydneycup",
-    "tjsmithstakes",
-    "australianderby",
-    "australianoaks",
-    "champagnestakes",
-    "queenoftheturf",
-    "allagedstakes",
-    "rosehillguineas",
-    "ranvetstakes",
-    "georgeryderstakes",
-    "thegalaxy",
-    "vinerystudstakes",
-    "coolmoreclassic",
-    "randwickguineas",
-    "canterburystakes",
-    "chippingnortonstakes",
-    "surroundstakes",
-    "siresproducestakes",
-    "winxstakes",
-    "goldenrose",
-    "epsom",
-    "metropolitan",
-    "flightstakes",
-    "springchampionstakes",
-    "kingcharlesiiistakes",
+    ("goldenslipper", ""),
+    ("doncaster", ""),
+    ("queenelizabethstakes", "NSW"),
+    ("sydneycup", ""),
+    ("tjsmithstakes", ""),
+    ("australianderby", ""),
+    ("australianoaks", ""),
+    ("champagnestakes", ""),
+    ("queenoftheturf", ""),
+    ("allagedstakes", ""),
+    ("rosehillguineas", ""),
+    ("ranvetstakes", ""),
+    ("georgeryderstakes", ""),
+    ("thegalaxy", ""),
+    ("vinerystudstakes", ""),
+    ("coolmoreclassic", ""),
+    ("randwickguineas", ""),
+    ("canterburystakes", ""),
+    ("chippingnortonstakes", ""),
+    ("surroundstakes", ""),
+    ("siresproducestakes", "NSW"),
+    ("winxstakes", ""),
+    ("goldenrose", ""),
+    ("epsom", ""),
+    ("metropolitan", ""),
+    ("flightstakes", ""),
+    ("springchampionstakes", ""),
+    ("kingcharlesiiistakes", ""),
     // Victoria
-    "bluediamondstakes",
-    "oakleighplate",
-    "futuritystakes",
-    "cforrstakes",
-    "lightningstakes",
-    "australianguineas",
-    "newmarkethandicap",
-    "australiancup",
-    "williamreidstakes",
-    "memsiestakes",
-    "makybedivastakes",
-    "rupertclarkestakes",
-    "underwoodstakes",
-    "moirstakes",
-    "turnbullstakes",
-    "mightandpowerstakes",
-    "caulfieldguineas",
-    "toorakhandicap",
-    "thousandguineas",
-    "1000guineas",
-    "caulfieldcup",
-    "manikatostakes",
-    "coxplate",
-    "coolmorestudstakes",
-    "victoriaderby",
-    "empirerosestakes",
-    "melbournecup",
-    "vrcoaks",
-    "kennedyoaks",
-    "championsmile",
-    "championssprint",
-    "championsstakes",
+    ("bluediamondstakes", ""),
+    ("oakleighplate", ""),
+    ("futuritystakes", ""),
+    ("cforrstakes", ""),
+    ("blackcaviarlightning", ""),
+    ("lightning", "VIC"),
+    ("australianguineas", ""),
+    ("newmarkethandicap", ""),
+    ("australiancup", ""),
+    ("williamreidstakes", ""),
+    ("memsiestakes", ""),
+    ("makybedivastakes", ""),
+    ("rupertclarkestakes", ""),
+    ("underwoodstakes", ""),
+    ("moirstakes", ""),
+    ("turnbullstakes", ""),
+    ("mightandpower", ""),
+    ("caulfieldguineas", ""),
+    ("toorakhandicap", ""),
+    ("thousandguineas", ""),
+    ("1000guineas", ""),
+    ("caulfieldcup", ""),
+    ("manikatostakes", ""),
+    ("coxplate", ""),
+    ("coolmorestudstakes", ""),
+    ("victoriaderby", ""),
+    ("empirerosestakes", ""),
+    ("melbournecup", ""),
+    ("vrcoaks", ""),
+    ("kennedyoaks", ""),
+    ("championsmile", ""),
+    ("championssprint", ""),
+    ("championsstakes", ""),
     // Queensland
-    "doomben10000",
-    "doombencup",
-    "kingsfordsmithcup",
-    "stradbrokehandicap",
-    "jjatkins",
-    "queenslandderby",
-    "queenslandoaks",
-    "tattersallstiara",
+    ("doomben10000", ""),
+    ("doombencup", ""),
+    ("kingsfordsmithcup", ""),
+    ("stradbrokehandicap", ""),
+    ("jjatkins", ""),
+    ("queenslandderby", ""),
+    ("queenslandoaks", ""),
+    ("tattersallstiara", ""),
     // South Australia and Western Australia
-    "thegoodwood",
-    "robertsangsterstakes",
-    "australasianoaks",
-    "railwaystakes",
-    "winterbottomstakes",
-    "northerlystakes",
-    "kingstontownclassic",
+    ("thegoodwood", ""),
+    ("robertsangsterstakes", ""),
+    ("australasianoaks", ""),
+    ("railwaystakes", ""),
+    ("winterbottomstakes", ""),
+    ("northerlystakes", ""),
+    ("kingstontownclassic", ""),
 ];
 
 /// Words that make a race named after a Group 1 something else: its lead-up, its trial, a
@@ -269,8 +293,8 @@ const NOT_THE_RACE_ITSELF: &[&str] = &[
 ];
 
 /// The grade a race name or its conditions declare: "Group 1", "G1", "Gr 2", "Listed", or a
-/// name on the Group 1 list.
-fn grade_from(name: &str, conditions: &str) -> String {
+/// name on the Group 1 list, read with the state the meeting is in.
+fn grade_from(name: &str, conditions: &str, state: &str) -> String {
     let text = format!("{name} {conditions}").to_ascii_lowercase();
     let tokens: Vec<&str> = text
         .split(|c: char| !c.is_ascii_alphanumeric())
@@ -310,10 +334,15 @@ fn grade_from(name: &str, conditions: &str) -> String {
         .iter()
         .find_map(|w| squashed.strip_suffix(w))
         .unwrap_or(&squashed);
-    if GROUP_ONE_RACES
-        .iter()
-        .any(|g| squashed.ends_with(g) || stem.ends_with(g))
-    {
+    let is_group_one = GROUP_ONE_RACES.iter().any(|(race, only_in)| {
+        let before = [squashed.as_str(), stem]
+            .iter()
+            .find_map(|s| s.strip_suffix(race));
+        // The Western Australian Derby, Oaks and Guineas are not the Australian ones.
+        before.is_some_and(|b| !b.ends_with("western"))
+            && (only_in.is_empty() || state.trim().eq_ignore_ascii_case(only_in))
+    });
+    if is_group_one {
         return "Group 1".to_string();
     }
     String::new()
@@ -340,17 +369,75 @@ pub fn clean_person(s: &str) -> String {
     s.trim().to_string()
 }
 
+/// Clubs, bodies, schemes and people written by their initials in race names. In capitals
+/// they stay in capitals where an ordinary word is set in title case: "VRC Oaks", "TJ Smith
+/// Stakes", "JJ Atkins".
+const INITIALISMS: &[&str] = &[
+    "vrc", "mrc", "mvrc", "atc", "stc", "ajc", "brc", "qtc", "sajc", "watc", "trc", "ttc", "crc",
+    "rsl", "qtis", "bobs", "vobis", "tj", "jj", "cf", "wj", "bm",
+];
+
+/// Short words with no vowel that read as words all the same: "St Leger", "Mt Barker",
+/// "Mr Brightside".
+const NOT_INITIALISMS: &[&str] = &["st", "mt", "dr", "mr", "mrs", "ms", "jnr", "snr", "ltd"];
+
+/// Capitals set as a name is written: "KING CHARLES III STAKES" is "King Charles III
+/// Stakes", "VRC OAKS" is "VRC Oaks", "O'BRIEN" is "O'Brien", "MCGRATH" is "McGrath", and
+/// "3YO" and "F&M" stay as they are.
 pub(crate) fn title_case(s: &str) -> String {
     s.split_whitespace()
-        .map(|w| {
-            let mut c = w.chars();
-            match c.next() {
-                Some(f) => f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase(),
-                None => String::new(),
-            }
-        })
+        .map(title_word)
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// One word set in title case, unless the way it is written says it is not a plain word: a
+/// condition that opens with a figure ("3YO", "0-58") or joins two with an ampersand
+/// ("F&M"), or capitals that are a club's initials, a numeral in a royal name ("III") or
+/// have no vowel at all ("TJ", "BM64"). The letter after a one-letter prefix and an
+/// apostrophe, or after a leading Mc, is a capital too: O'Brien, D'Arcy, McGrath.
+fn title_word(w: &str) -> String {
+    let lower = w.to_lowercase();
+    let letters: Vec<char> = w.chars().filter(|c| c.is_alphabetic()).collect();
+    let in_capitals = !letters.is_empty() && letters.iter().all(|c| c.is_uppercase());
+    let no_vowel = !letters
+        .iter()
+        .any(|c| matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u' | 'y'));
+    let as_written = w.starts_with(|c: char| c.is_ascii_digit())
+        || w.contains('&')
+        || (in_capitals
+            && (INITIALISMS.contains(&lower.as_str())
+                || is_roman_numeral(w)
+                || (no_vowel && !NOT_INITIALISMS.contains(&lower.as_str()))));
+    if as_written {
+        return w.to_string();
+    }
+    let mut chars = lower.chars();
+    let after_prefix =
+        chars.next().is_some_and(|c| c.is_alphabetic()) && chars.next() == Some('\'');
+    let capital_at = |i: usize| i == 0 || (i == 2 && (after_prefix || lower.starts_with("mc")));
+    lower
+        .chars()
+        .enumerate()
+        .flat_map(|(i, c)| {
+            if capital_at(i) {
+                c.to_uppercase().collect::<Vec<_>>()
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
+}
+
+/// II to XXXIX in capitals, as in "King Charles III". A lone I, V or X is the same either way.
+fn is_roman_numeral(w: &str) -> bool {
+    let rest = w.trim_start_matches('X');
+    w.len() >= 2
+        && w.len() - rest.len() <= 3
+        && matches!(
+            rest,
+            "" | "I" | "II" | "III" | "IV" | "V" | "VI" | "VII" | "VIII" | "IX"
+        )
 }
 
 pub(crate) fn venue_token(venue: &str) -> String {
@@ -408,27 +495,62 @@ mod tests {
 
     #[test]
     fn group_ones_are_known_by_name_and_other_grades_by_their_marker() {
-        for (name, conditions, grade) in [
-            ("TAB EPSOM", "", "Group 1"),
-            ("ASAHI SUPER DRY METROPOLITAN", "", "Group 1"),
-            ("TAB Turnbull Stakes", "", "Group 1"),
-            ("Ladbrokes Manikato Stakes", "", "Group 1"),
-            ("YULONG GOLDEN ROSE", "", "Group 1"),
-            ("Penfolds Victoria Derby", "", "Group 1"),
-            ("Lexus Melbourne Cup", "", "Group 1"),
-            ("T J Smith Stakes", "", "Group 1"),
-            ("Sportsbet Caulfield Guineas Prelude", "", ""),
-            ("SAVE THE DATE WARWICK CUP SAT 10 OCT Maiden Plate", "", ""),
-            ("Darley Maribyrnong Trial Stakes", "", ""),
-            ("Howden Super Impose Stakes", "", ""),
-            ("Metropolitan Hotel Maiden Plate", "", ""),
-            ("Doncaster Mile", "", "Group 1"),
-            ("Doomben 10,000", "", "Group 1"),
-            ("Gilgai Stakes", "G2 Open Handicap", "Group 2"),
-            ("Paris Lane Stakes", "3YO+ Gr 3 Set Weights", "Group 3"),
-            ("Heritage Stakes", "LR. Quality", "Listed"),
+        for (name, conditions, state, grade) in [
+            ("TAB EPSOM", "", "NSW", "Group 1"),
+            ("ASAHI SUPER DRY METROPOLITAN", "", "NSW", "Group 1"),
+            ("TAB Turnbull Stakes", "", "VIC", "Group 1"),
+            ("Ladbrokes Manikato Stakes", "", "VIC", "Group 1"),
+            ("YULONG GOLDEN ROSE", "", "NSW", "Group 1"),
+            ("Penfolds Victoria Derby", "", "VIC", "Group 1"),
+            ("Lexus Melbourne Cup", "", "VIC", "Group 1"),
+            ("T J Smith Stakes", "", "NSW", "Group 1"),
+            ("Sportsbet Caulfield Guineas Prelude", "", "VIC", ""),
+            (
+                "SAVE THE DATE WARWICK CUP SAT 10 OCT Maiden Plate",
+                "",
+                "QLD",
+                "",
+            ),
+            ("Darley Maribyrnong Trial Stakes", "", "VIC", ""),
+            ("Howden Super Impose Stakes", "", "VIC", ""),
+            ("Metropolitan Hotel Maiden Plate", "", "NSW", ""),
+            ("Doncaster Mile", "", "NSW", "Group 1"),
+            ("Doomben 10,000", "", "QLD", "Group 1"),
+            ("Gilgai Stakes", "G2 Open Handicap", "VIC", "Group 2"),
+            (
+                "Paris Lane Stakes",
+                "3YO+ Gr 3 Set Weights",
+                "VIC",
+                "Group 3",
+            ),
+            ("Heritage Stakes", "LR. Quality", "VIC", "Listed"),
+            // A name shared by a Group 1 and a lesser race in another state.
+            ("Paramount+ Queen Elizabeth Stakes", "", "VIC", ""),
+            ("QUEEN ELIZABETH STAKES", "", "VIC", ""),
+            ("QUEEN ELIZABETH STAKES", "", "NSW", "Group 1"),
+            ("VRC Sires' Produce Stakes", "", "VIC", ""),
+            ("SIRES' PRODUCE STAKES", "", "NSW", "Group 1"),
+            ("Lightning Stakes", "", "SA", ""),
+            ("Lightning Stakes", "", "VIC", "Group 1"),
+            ("Black Caviar Lightning", "", "VIC", "Group 1"),
+            // The Western Australian classics are not the Australian ones.
+            ("Western Australian Derby", "", "WA", ""),
+            ("Western Australian Oaks", "", "WA", ""),
+            ("Western Australian Guineas", "", "WA", ""),
+            ("Australian Derby", "", "NSW", "Group 1"),
+            ("Australian Oaks", "", "NSW", "Group 1"),
+            ("Australian Guineas", "", "VIC", "Group 1"),
+            ("South Australian Derby", "", "SA", "Group 1"),
+            ("Queensland Derby", "", "QLD", "Group 1"),
+            // The race's own name is what counts, with or without its generic last word.
+            ("Sportsbet Might And Power", "", "VIC", "Group 1"),
+            ("Might And Power Stakes", "", "VIC", "Group 1"),
         ] {
-            assert_eq!(grade_from(name, conditions), grade, "{name} / {conditions}");
+            assert_eq!(
+                grade_from(name, conditions, state),
+                grade,
+                "{name} / {conditions} / {state}"
+            );
         }
         assert_eq!(
             race_name("TAB ONE POOL Edward Manifold Stakes"),
@@ -443,6 +565,62 @@ mod tests {
             race_name("Howden Super Impose Stakes"),
             "Howden Super Impose Stakes"
         );
+    }
+
+    #[test]
+    fn race_names_lose_wagering_slogans_or_go_altogether() {
+        for (raw, name) in [
+            ("LADBROKES ODDS BOOST HANDICAP", "Handicap"),
+            ("SPORTSBET BET WITH MATES HANDICAP", "Handicap"),
+            ("Same Race Multi Handicap", "Handicap"),
+            ("Cash Out Handicap", "Handicap"),
+            ("PRICE BOOST HANDICAP", "Handicap"),
+            ("Each Way Extra Handicap", "Handicap"),
+            ("Punter Assist Handicap", "Handicap"),
+            ("Multiplier Handicap", "Handicap"),
+            ("SKY RACING CLASS 3 PLATE", "Class 3 Plate"),
+            // A wagering word the scrubbing did not know is reason to drop the whole name.
+            ("BET NOW HANDICAP", ""),
+            ("Punters Club Handicap", ""),
+            ("MULTI MANIA BENCHMARK 64 Handicap", ""),
+            ("Fixed Odds Plate", ""),
+            ("Bookies Bag Handicap", ""),
+            // Whole words only: Betty and Totem are not wagering.
+            ("BETTY'S PLATE", "Betty's Plate"),
+            ("Totem Handicap", "Totem Handicap"),
+        ] {
+            assert_eq!(race_name(raw), name, "{raw}");
+        }
+    }
+
+    #[test]
+    fn capitals_keep_initials_numerals_and_conditions_as_written() {
+        for (raw, cased) in [
+            ("CAULFIELD CUP", "Caulfield Cup"),
+            ("TAB KING CHARLES III STAKES", "King Charles III Stakes"),
+            ("TJ SMITH STAKES", "TJ Smith Stakes"),
+            ("JJ ATKINS", "JJ Atkins"),
+            ("VRC OAKS", "VRC Oaks"),
+            ("ATC CUP", "ATC Cup"),
+            ("O'BRIEN STAKES", "O'Brien Stakes"),
+            ("D'ARCY HANDICAP", "D'Arcy Handicap"),
+            ("3YO MAIDEN PLATE", "3YO Maiden Plate"),
+            ("2YO F&M HANDICAP", "2YO F&M Handicap"),
+            ("BM64 HANDICAP", "BM64 Handicap"),
+            (
+                "MCGRATH ESTATE AGENTS HANDICAP",
+                "McGrath Estate Agents Handicap",
+            ),
+            ("ST LEGER", "St Leger"),
+            ("ARROWFIELD BREEDERS' PLATE", "Arrowfield Breeders' Plate"),
+        ] {
+            assert_eq!(race_name(raw), cased, "{raw}");
+        }
+        assert_eq!(title_case("I AM INVINCIBLE"), "I Am Invincible");
+        assert_eq!(title_case("Tom MCDONALD"), "Tom McDonald");
+        assert_eq!(title_case("JD HAYES"), "JD Hayes");
+        assert_eq!(title_case("SOFT5"), "Soft5");
+        assert_eq!(title_case("LIV BYRNE"), "Liv Byrne");
     }
 
     #[test]
