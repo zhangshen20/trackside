@@ -51,7 +51,7 @@ pub fn meeting_from_fields(json: &str) -> Result<Meeting> {
     Ok(Meeting {
         date,
         state: f.state.trim().to_string(),
-        venue: title_case(&without_bookmakers(&f.venue)),
+        venue: title_case(&venue_name(&f.venue)),
         track_condition: None,
         rail: None,
         weather: None,
@@ -76,7 +76,7 @@ pub fn form_from_json(json: &str, trainer: &str) -> Result<HorseForm> {
             let date = parse_ra_date(&s.date)?;
             Some(PastStart {
                 date,
-                venue: without_bookmakers(&s.track),
+                venue: venue_name(&s.track),
                 distance_m: s.distance_m.and_then(|d| u32::try_from(d).ok()),
                 condition: split_condition(&s.condition),
                 class: without_bookmakers(&s.class),
