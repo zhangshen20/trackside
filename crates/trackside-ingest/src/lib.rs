@@ -153,7 +153,7 @@ fn split_condition(s: &str) -> String {
 /// server speaks the race by its number instead.
 const WAGERING_WORDS: &[&str] = &[
     "odds", "bet", "bets", "betting", "wager", "wagering", "punt", "punter", "punters", "bookie",
-    "bookies", "tote", "multi",
+    "bookies", "tote", "multi", "betslip",
 ];
 
 /// The race's name without wagering sponsors. Racing NSW and Queensland publish names in
@@ -174,11 +174,98 @@ fn race_name(raw: &str) -> String {
         return String::new();
     }
     let cased = if name.chars().any(|c| c.is_lowercase()) {
-        name
+        sponsor_case(&name)
     } else {
         title_case(&name)
     };
     spoken::race_words(&cased)
+}
+
+/// Short words that are words, not initials, when a sponsor writes them in capitals.
+const SHORT_WORDS: &[&str] = &[
+    "and", "the", "of", "for", "at", "in", "on", "to", "my", "new", "day", "cup", "bay", "old",
+    "our", "all", "big", "top", "red", "sun", "inn", "pub", "rum", "gas", "car", "now", "way",
+    "you", "vet", "sub", "app", "ute", "men", "son", "hot", "bar", "ace", "max", "rex", "ray",
+    "roy", "ian", "tom", "jim", "sam", "ben", "dan", "joe", "ken", "ron", "lee", "jan", "feb",
+    "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec", "mon", "tue", "wed",
+    "thu", "fri", "sat", "pty", "co", "by", "sir", "air", "mud", "hut",
+];
+
+/// Little words set in lower case inside a name: "Coolum at the Beach".
+const MINOR_WORDS: &[&str] = &["and", "the", "of", "for", "at", "in", "on", "to"];
+
+/// The words of a race's conditions, set in title case even alone ("BENCHMARK 60 Handicap").
+const RACE_TERMS: &[&str] = &[
+    "benchmark",
+    "handicap",
+    "plate",
+    "maiden",
+    "class",
+    "open",
+    "ratings",
+    "band",
+    "stakes",
+    "quality",
+    "restricted",
+    "trophy",
+    "mile",
+    "sprint",
+];
+
+/// A Queensland name with a sponsor in capitals before the race in title case ("AAA TILT
+/// TRAY TOWING BENCHMARK 62 Handicap"): the capitals are set in title case ("AAA Tilt Tray
+/// Towing Benchmark 62 Handicap") so a screen shows a name, not a shout. Only a run of
+/// capitals with at least two words of four letters or more is a shout; a short word in it
+/// stays in capitals as initials ("AAA", "BSN") unless it is an ordinary short word. A name
+/// with only a club's initials in capitals ("BRC Members Plate") is left alone.
+fn sponsor_case(name: &str) -> String {
+    let words: Vec<&str> = name.split_whitespace().collect();
+    let shouted = |w: &str| {
+        let letters: Vec<char> = w.chars().filter(|c| c.is_alphabetic()).collect();
+        !letters.is_empty() && letters.iter().all(|c| c.is_uppercase())
+    };
+    // Figures and marks ("0", "-", "/") carry a run of capitals on without counting.
+    let no_letters = |w: &str| !w.chars().any(|c| c.is_alphabetic());
+    let long = |w: &str| w.chars().filter(|c| c.is_alphabetic()).count() >= 4;
+    let bare = |w: &str| -> String {
+        w.chars()
+            .filter(|c| c.is_alphabetic())
+            .collect::<String>()
+            .to_lowercase()
+    };
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    let mut i = 0;
+    while i < words.len() {
+        if !shouted(words[i]) {
+            out.push(words[i].to_string());
+            i += 1;
+            continue;
+        }
+        let end = (i..words.len())
+            .find(|&j| !shouted(words[j]) && !no_letters(words[j]))
+            .unwrap_or(words.len());
+        let run = &words[i..end];
+        let a_shout = run.iter().filter(|w| long(w)).count() >= 2;
+        for w in run {
+            let b = bare(w);
+            let set = if a_shout {
+                long(w)
+                    || SHORT_WORDS.contains(&b.as_str())
+                    || NOT_INITIALISMS.contains(&b.as_str())
+            } else {
+                RACE_TERMS.contains(&b.as_str())
+            };
+            out.push(if !set {
+                w.to_string()
+            } else if !out.is_empty() && MINOR_WORDS.contains(&w.to_lowercase().as_str()) {
+                w.to_lowercase()
+            } else {
+                title_parts(w)
+            });
+        }
+        i = end;
+    }
+    out.join(" ")
 }
 
 /// Australia's Group 1 races, as their names appear once sponsors are removed, lower case
@@ -389,9 +476,31 @@ const NOT_INITIALISMS: &[&str] = &["st", "mt", "dr", "mr", "mrs", "ms", "jnr", "
 /// "3YO" and "F&M" stay as they are.
 pub(crate) fn title_case(s: &str) -> String {
     s.split_whitespace()
-        .map(title_word)
+        .map(title_parts)
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// A word in title case part by part, past an opening bracket or quote and on each side of a
+/// slash: "(OWEN" is "(Owen", "QUALIFIER/EWAN" is "Qualifier/Ewan".
+fn title_parts(w: &str) -> String {
+    w.split('/')
+        .map(|part| {
+            let at = part
+                .find(|c: char| c.is_alphanumeric())
+                .unwrap_or(part.len());
+            let (lead, rest) = part.split_at(at);
+            format!(
+                "{lead}{}",
+                if rest.is_empty() {
+                    String::new()
+                } else {
+                    title_word(rest)
+                }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// One word set in title case, unless the way it is written says it is not a plain word: a
@@ -588,11 +697,83 @@ mod tests {
             ("MULTI MANIA BENCHMARK 64 Handicap", ""),
             ("Fixed Odds Plate", ""),
             ("Bookies Bag Handicap", ""),
+            // What a bookmaker's promotion leaves once its brand is gone.
+            (
+                "Ladbrokes Place Extra BM56 Handicap",
+                "Benchmark 56 Handicap",
+            ),
+            ("Ladbrokes Place Extra Maiden", "Maiden"),
+            ("Ladbrokes Tote Win +10% in October Plate", "Plate"),
+            (
+                "+10% in OCTOBER BENCHMARK 60 Handicap",
+                "Benchmark 60 Handicap",
+            ),
+            ("+10% BM66 Handicap", "Benchmark 66 Handicap"),
+            ("10% Handicap", "Handicap"),
+            (
+                "New Betslip 4YO & Up Maiden Plate",
+                "Four-Year-Old & Up Maiden Plate",
+            ),
+            ("Betslip Bonanza Handicap", ""),
             // Whole words only: Betty and Totem are not wagering.
             ("BETTY'S PLATE", "Betty's Plate"),
             ("Totem Handicap", "Totem Handicap"),
         ] {
             assert_eq!(race_name(raw), name, "{raw}");
+        }
+    }
+
+    #[test]
+    fn a_sponsor_in_capitals_is_set_as_a_name() {
+        for (raw, cased) in [
+            (
+                "AAA TILT TRAY TOWING BENCHMARK 62 Handicap",
+                "AAA Tilt Tray Towing Benchmark 62 Handicap",
+            ),
+            (
+                "ARDROSSAN ANGUS / BSN TRADING Class 3 Plate",
+                "Ardrossan Angus / BSN Trading Class 3 Plate",
+            ),
+            (
+                "BECOME A BRC MEMBER QTIS Three-Year-Old Handicap",
+                "Become A BRC Member QTIS Three-Year-Old Handicap",
+            ),
+            (
+                "COOLUM AT THE BEACH OPEN Handicap",
+                "Coolum at the Beach Open Handicap",
+            ),
+            (
+                "COUNTRY STAMPEDE QUALIFIER/EWAN BRACELET OPEN Handicap",
+                "Country Stampede Qualifier/Ewan Bracelet Open Handicap",
+            ),
+            (
+                "COUTRYSIDE ELECTRICS (OWEN BRODIE MEMORIAL TROPHY) QTIS Maiden Plate",
+                "Coutryside Electrics (Owen Brodie Memorial Trophy) QTIS Maiden Plate",
+            ),
+            (
+                "QUEENSLAND COTTON ST GEORGE CUP BENCHMARK 65 Handicap",
+                "Queensland Cotton St George Cup Benchmark 65 Handicap",
+            ),
+            (
+                "DAVID HYNES WTC THANKS YOU FOR 7 YEARS Maiden Plate",
+                "David Hynes WTC Thanks You for 7 Years Maiden Plate",
+            ),
+            // Initials alone, or one short shout, stay as written.
+            ("BRD Group BM65 Handicap", "BRD Group Benchmark 65 Handicap"),
+            (
+                "CLONMELL RATINGS BAND 0 - 50 Handicap",
+                "Clonmell Ratings Band 0 - 50 Handicap",
+            ),
+            (
+                "BULLIWALLAH Class B Handicap",
+                "BULLIWALLAH Class B Handicap",
+            ),
+            (
+                "Ballina RSL Class 1 Handicap",
+                "Ballina RSL Class 1 Handicap",
+            ),
+        ] {
+            assert_eq!(race_name(raw), cased, "{raw}");
         }
     }
 
