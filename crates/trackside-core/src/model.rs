@@ -31,17 +31,43 @@ pub const BOOKMAKER_BRANDS: &[&str] = &[
     "tabcorp",
 ];
 
-/// Wagering products and promotions that sponsors write into race names ("TAB ONE POOL
-/// Edward Manifold Stakes", "HKJC World Pool Paris Lane Stakes", "MORE ON TOTE WIN
-/// Benchmark 78 Handicap"). Removed whole, longest first, before the brand words.
+/// Wagering products, promotions and broadcast brands that sponsors write into race names
+/// ("TAB ONE POOL Edward Manifold Stakes", "HKJC World Pool Paris Lane Stakes", "MORE ON
+/// TOTE WIN Benchmark 78 Handicap", "LADBROKES ODDS BOOST Handicap", "SKY RACING Class 3
+/// Plate"). Removed whole, longest first so that a phrase goes before any shorter phrase
+/// inside it, and before the brand words.
 pub const WAGERING_PHRASES: &[&str] = &[
     "tote win + 10% in october",
     "more from tote with",
     "more on tote win",
+    "same race multi",
+    "same game multi",
+    "best tote plus",
+    "bet with mates",
+    "each way extra",
+    "extra winnings",
+    "back yourself",
+    "punter assist",
+    "early payout",
+    "bet builder",
     "hosted pots",
+    "price boost",
+    "odds boost",
     "world pool",
+    "sky racing",
+    "multiplier",
+    "bonus bets",
+    "money back",
+    "power play",
+    "bet boost",
+    "best tote",
+    "bonus bet",
     "one pool",
     "tote win",
+    "cash out",
+    "top tote",
+    "top fluc",
+    "cash in",
     "hkjc",
     "tote",
 ];
@@ -70,18 +96,21 @@ pub fn without_bookmakers(s: &str) -> String {
                 .join("-")
         })
         .collect();
-    // A dash standing alone stays only between two words that were both kept ("0 - 65
-    // Handicap"); one left over from a brand ("Ladbrokes - Fast Form Plate") goes.
+    // A dash, plus, ampersand or colon standing alone stays only between two words that were
+    // both kept ("0 - 65 Handicap", "Colts & Geldings"); one left over from a brand
+    // ("Ladbrokes - Fast Form Plate", "Sportsbet & Neds Plate") goes. Joined onto a word
+    // they are part of it: "3YO+" and "Benchmark 64+" keep their plus.
+    let is_word = |w: &str| {
+        !w.trim_matches(|c| matches!(c, '-' | '+' | '&' | ':'))
+            .is_empty()
+    };
     let mut kept: Vec<&str> = Vec::with_capacity(words.len());
     for (i, w) in words.iter().enumerate() {
-        let bare = w.trim_matches('-');
-        if bare.is_empty() {
-            let between = kept.last().is_some_and(|k| !k.trim_matches('-').is_empty())
-                && words[i + 1..]
-                    .first()
-                    .is_some_and(|n| !n.trim_matches('-').is_empty())
+        if !is_word(w) {
+            let between = kept.last().is_some_and(|k| is_word(k))
+                && words.get(i + 1).is_some_and(|n| is_word(n))
                 && i > 0
-                && !words[i - 1].trim_matches('-').is_empty();
+                && is_word(&words[i - 1]);
             if between && !w.is_empty() {
                 kept.push(w);
             }
@@ -90,7 +119,7 @@ pub fn without_bookmakers(s: &str) -> String {
         kept.push(w);
     }
     kept.join(" ")
-        .trim_matches(|c: char| matches!(c, '-' | ',' | '+' | '&' | ':') || c.is_whitespace())
+        .trim_matches(|c: char| matches!(c, '-' | ',') || c.is_whitespace())
         .to_string()
 }
 
@@ -523,6 +552,49 @@ mod tests {
             without_bookmakers("Pooley Totem Stakes"),
             "Pooley Totem Stakes"
         );
+    }
+
+    #[test]
+    fn wagering_slogans_are_removed_from_race_names() {
+        for (name, cleaned) in [
+            ("LADBROKES ODDS BOOST HANDICAP", "HANDICAP"),
+            ("Sportsbet Bet With Mates Handicap", "Handicap"),
+            ("Same Race Multi Handicap", "Handicap"),
+            ("Same Game Multi Plate", "Plate"),
+            ("Cash Out Handicap", "Handicap"),
+            ("Cash In Handicap", "Handicap"),
+            ("Price Boost Handicap", "Handicap"),
+            ("Each Way Extra Handicap", "Handicap"),
+            ("Punter Assist Handicap", "Handicap"),
+            ("Multiplier Handicap", "Handicap"),
+            ("Back Yourself Handicap", "Handicap"),
+            ("Extra Winnings Handicap", "Handicap"),
+            ("Neds Bet Builder Handicap", "Handicap"),
+            (
+                "TAB Bonus Bets Benchmark 64 Handicap",
+                "Benchmark 64 Handicap",
+            ),
+            ("SKY RACING Class 3 Plate", "Class 3 Plate"),
+            ("Sportsbet & Neds Plate", "Plate"),
+        ] {
+            assert_eq!(without_bookmakers(name), cleaned, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_plus_joined_to_a_condition_stays() {
+        assert_eq!(
+            without_bookmakers("Group 1. Handicap. 3YO+"),
+            "Group 1. Handicap. 3YO+"
+        );
+        assert_eq!(without_bookmakers("TAB Benchmark 64+"), "Benchmark 64+");
+        assert_eq!(without_bookmakers("Colts & Geldings"), "Colts & Geldings");
+        // Standing alone next to a removed brand, the sign goes with it.
+        assert_eq!(
+            without_bookmakers("Fast Form Plate + Sportsbet"),
+            "Fast Form Plate"
+        );
+        assert_eq!(without_bookmakers("TAB: Maiden Plate"), "Maiden Plate");
     }
 
     #[test]

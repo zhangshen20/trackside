@@ -157,6 +157,23 @@ fn tidy_form(fixture: &mut Fixture) {
     }
 }
 
+/// The surnames in a person's name, one for each partner when it is a training partnership
+/// ("Ben, Will & JD Hayes", "M. Price & M. Kent Jnr"), each alone and with the word before
+/// it: "M. Price & M. Kent Jnr" gives "Price", "M. Price", "Jnr" and "Kent Jnr".
+fn surnames(name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for part in name.split([',', '&']).flat_map(|p| p.split(" and ")) {
+        let words: Vec<&str> = part.split_whitespace().collect();
+        if let Some(last) = words.last() {
+            out.push(last.to_string());
+        }
+        if words.len() >= 2 {
+            out.push(words[words.len() - 2..].join(" "));
+        }
+    }
+    out
+}
+
 /// Venue names differ by source and sponsor: Racing Australia says "Rosehill Gardens" and
 /// "Thomas Farms RC Murray Bridge", results feeds say "Rosehill" and "Murray Bridge", and
 /// listeners say either. Two names match when one is the other's whole-word prefix or suffix.
@@ -293,15 +310,19 @@ impl Store for FixtureStore {
         names.sort_unstable();
         names.dedup();
         let found = crate::names::closest(heard, names.iter().copied(), limit);
-        if !found.is_empty() || heard.split_whitespace().count() != 1 {
+        if !found.is_empty() || heard.split_whitespace().count() > 2 {
             return Ok(found.into_iter().map(|(n, _)| n.to_string()).collect());
         }
-        // A surname alone: "how's Kah going".
-        let surname = |n: &str| n.split_whitespace().last().unwrap_or("").to_string();
+        // A surname alone ("how's Kah going") or with the word before it ("Kent Jnr"),
+        // against every surname in the name: a training partnership has two or three.
         let mut by_surname: Vec<&str> = names
             .iter()
             .copied()
-            .filter(|n| crate::names::sounds_like(heard, &surname(n)) == Some(0))
+            .filter(|n| {
+                surnames(n)
+                    .iter()
+                    .any(|s| crate::names::sounds_like(heard, s) == Some(0))
+            })
             .collect();
         by_surname.truncate(limit);
         Ok(by_surname.into_iter().map(str::to_string).collect())
@@ -423,6 +444,44 @@ mod tests {
             assert_eq!(form.unwrap().horse, "Jimmysstar (NZ)", "{name}");
         }
         assert!(store.horse_form("Jimmy").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn trainers_are_found_by_surname_in_partnerships_too() {
+        let runner = |trainer: &str| Runner {
+            trainer: trainer.into(),
+            ..Default::default()
+        };
+        let store = FixtureStore::from_fixture(Fixture {
+            meetings: vec![Meeting {
+                date: "2026-10-17".parse().unwrap(),
+                races: vec![RaceCard {
+                    race_number: 1,
+                    runners: vec![
+                        runner("C. Waller"),
+                        runner("Ben, Will & JD Hayes"),
+                        runner("M. Price & M. Kent Jnr"),
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        for (heard, want) in [
+            ("Waller", "C. Waller"),
+            ("Hayes", "Ben, Will & JD Hayes"),
+            ("Price", "M. Price & M. Kent Jnr"),
+            ("Kent Jnr", "M. Price & M. Kent Jnr"),
+        ] {
+            let found = store.similar_people(heard, "trainer", 3).await.unwrap();
+            assert_eq!(found, vec![want.to_string()], "{heard}");
+        }
+        assert!(store
+            .similar_people("Maher", "trainer", 3)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
