@@ -119,6 +119,7 @@ aws cloudformation deploy --stack-name "$STACK" --template-file deploy/trackside
   --parameter-overrides "ArtifactBucket=$BUCKET" "CodeKey=$CODE_KEY" "SimCodeKey=$SIM_CODE_KEY" \
     "RefreshCodeKey=$REFRESH_CODE_KEY" ${HR_ENV:+"ArchiveEnv=$HR_ENV"} \
     ${TRACKSIDE_SIM_TODAY+"SimToday=$TRACKSIDE_SIM_TODAY"} "SimModel=${SIM_MODEL:-au.anthropic.claude-haiku-4-5-20251001-v1:0}" \
+    ${ALERT_EMAIL+"AlertEmail=$ALERT_EMAIL"} \
     ${DOMAIN_PARAMS[@]+"${DOMAIN_PARAMS[@]}"}
 
 # A new snapshot with unchanged code needs fresh instances to pick it up.

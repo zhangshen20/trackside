@@ -56,6 +56,14 @@ Parameters:
     Type: String
     Default: "2026-09-22"
     Description: First date (YYYY-MM-DD) the daily refresh puts in the snapshot.
+  AlertEmail:
+    Type: String
+    Default: ""
+    Description: >-
+      Email address told when a health alarm fires (the refresh fails, the snapshot goes stale,
+      the public endpoint or Cognito stops answering, or the server errors). AWS sends a
+      confirmation email first. Empty keeps the alarms visible in CloudWatch only, with no SNS
+      topic.
   RateLimit:
     Type: Number
     Default: 10
@@ -90,6 +98,7 @@ Conditions:
   HasDomain: !And [!Not [!Equals [!Ref DomainName, ""]], !Not [!Equals [!Ref CertificateArn, ""]]]
   HasZone: !And [!Condition HasDomain, !Not [!Equals [!Ref HostedZoneId, ""]]]
   HasSim: !Not [!Equals [!Ref SimCodeKey, ""]]
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
   HasRefresh: !And [!Not [!Equals [!Ref RefreshCodeKey, ""]], !Not [!Equals [!Ref ArchiveEnv, ""]]]
 
 Resources:
@@ -489,8 +498,9 @@ Resources:
                   - !Sub "arn:aws:s3:::hr-${ArchiveEnv}-gamble-${AWS::AccountId}/*"
                   - !Sub "arn:aws:s3:::hr-${ArchiveEnv}-sectional-${AWS::AccountId}"
                   - !Sub "arn:aws:s3:::hr-${ArchiveEnv}-sectional-${AWS::AccountId}/*"
+              # Put to publish the snapshot; Get so the health probe can read its age.
               - Effect: Allow
-                Action: s3:PutObject
+                Action: [s3:PutObject, s3:GetObject]
                 Resource: !Sub "arn:aws:s3:::${ArtifactBucket}/snapshots/*"
               - Effect: Allow
                 Action: lambda:UpdateFunctionConfiguration
@@ -519,6 +529,9 @@ Resources:
           TRACKSIDE_SNAPSHOT_FROM: !Ref SnapshotFrom
           TRACKSIDE_SNAPSHOT_UPLOAD: !Sub "s3://${ArtifactBucket}/${SnapshotKey}"
           TRACKSIDE_MCP_FUNCTION: !Ref Function
+          TRACKSIDE_PROBE_URL: !If [HasDomain, !Sub "https://${DomainName}", !GetAtt Api.ApiEndpoint]
+          TRACKSIDE_PROBE_ISSUER: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
+          TRACKSIDE_PROBE_SIM: !If [HasSim, "1", "0"]
       Tags: [{ Key: Project, Value: trackside }]
 
   # 12:00 and 20:00 UTC: about 10 or 11 pm in Melbourne after the day's results, and about 6
@@ -543,6 +556,122 @@ Resources:
       Action: lambda:InvokeFunction
       Principal: events.amazonaws.com
       SourceArn: !GetAtt RefreshSchedule.Arn
+
+  # Hourly health probe, run by the same function: the public endpoint asks for a token, the
+  # sign-in metadata and Cognito answer, the simulator loads and the snapshot is fresh.
+  ProbeSchedule:
+    Type: AWS::Events::Rule
+    Condition: HasRefresh
+    Properties:
+      Name: trackside-probe
+      Description: Check Trackside's public endpoint, sign-in and data freshness every hour
+      ScheduleExpression: rate(1 hour)
+      State: ENABLED
+      Targets:
+        - Id: probe
+          Arn: !GetAtt RefreshFunction.Arn
+          Input: '{"probe": true}'
+
+  ProbeInvokePermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasRefresh
+    Properties:
+      FunctionName: !Ref RefreshFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ProbeSchedule.Arn
+
+  # Alarms, so a broken stack during judging is noticed before a judge notices it.
+  # Only with an AlertEmail: creating the topic needs sns permissions on the deploy role.
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Condition: HasAlertEmail
+    Properties:
+      TopicName: trackside-alerts
+      DisplayName: Trackside alerts
+      Tags: [{ Key: Project, Value: trackside }]
+
+  AlertSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # A failed refresh or a failed probe (endpoint down, Cognito down, snapshot stale).
+  RefreshOrProbeFailedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasRefresh
+    Properties:
+      AlarmName: trackside-refresh-or-probe-failed
+      AlarmDescription: >-
+        The data refresh or the hourly health probe failed. The probe's log in
+        /aws/lambda/trackside-refresh says which check.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Ref RefreshFunction }]
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlertEmail, [!Ref AlertTopic], !Ref AWS::NoValue]
+      OKActions: !If [HasAlertEmail, [!Ref AlertTopic], !Ref AWS::NoValue]
+
+  # The probe itself stopped running, so nothing above would fire.
+  ProbeSilentAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasRefresh
+    Properties:
+      AlarmName: trackside-probe-silent
+      AlarmDescription: The hourly health probe has not run for three hours.
+      Namespace: AWS/Lambda
+      MetricName: Invocations
+      Dimensions: [{ Name: FunctionName, Value: !Ref RefreshFunction }]
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions: !If [HasAlertEmail, [!Ref AlertTopic], !Ref AWS::NoValue]
+      OKActions: !If [HasAlertEmail, [!Ref AlertTopic], !Ref AWS::NoValue]
+
+  McpErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: trackside-mcp-errors
+      AlarmDescription: The MCP server function failed five or more times in five minutes.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Ref Function }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlertEmail, [!Ref AlertTopic], !Ref AWS::NoValue]
+      OKActions: !If [HasAlertEmail, [!Ref AlertTopic], !Ref AWS::NoValue]
+
+  Api5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: trackside-api-5xx
+      AlarmDescription: The public API returned five or more server errors in five minutes.
+      Namespace: AWS/ApiGateway
+      MetricName: 5xx
+      Dimensions: [{ Name: ApiId, Value: !Ref Api }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlertEmail, [!Ref AlertTopic], !Ref AWS::NoValue]
+      OKActions: !If [HasAlertEmail, [!Ref AlertTopic], !Ref AWS::NoValue]
 
 Outputs:
   McpUrl:

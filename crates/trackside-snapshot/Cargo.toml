@@ -18,5 +18,6 @@ chrono.workspace = true
 chrono-tz.workspace = true
 flate2.workspace = true
 lambda_runtime = "1"
+reqwest.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
