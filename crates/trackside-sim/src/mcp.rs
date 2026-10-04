@@ -24,6 +24,20 @@ pub struct ToolDef {
     pub description: String,
     #[serde(rename = "inputSchema", default)]
     pub input_schema: Value,
+    /// Tool metadata; `ui.resourceUri` names the MCP App that draws the tool's result.
+    #[serde(rename = "_meta", default, skip_serializing_if = "Value::is_null")]
+    pub meta: Value,
+}
+
+impl ToolDef {
+    /// The `ui://` resource of the tool's MCP App, if it has one.
+    pub fn app_uri(&self) -> Option<&str> {
+        self.meta
+            .pointer("/ui/resourceUri")
+            .or_else(|| self.meta.get("ui/resourceUri"))
+            .and_then(Value::as_str)
+            .filter(|u| u.starts_with("ui://"))
+    }
 }
 
 /// What one tool call returned: the spoken text, and the structured content a screen draws.
@@ -107,6 +121,45 @@ impl McpClient {
         Ok(serde_json::from_value(
             result.get("tools").cloned().unwrap_or_default(),
         )?)
+    }
+
+    /// A tool call's whole result, for an MCP App that called the tool through the host.
+    pub async fn call_tool_raw(
+        &self,
+        token: Option<&str>,
+        name: &str,
+        args: Value,
+    ) -> Result<Value> {
+        self.rpc(
+            token,
+            "tools/call",
+            json!({"name": name, "arguments": args}),
+        )
+        .await
+    }
+
+    /// The HTML of an MCP App (`resources/read` on its `ui://` resource).
+    pub async fn read_app(&self, token: Option<&str>, uri: &str) -> Result<String> {
+        let result = self
+            .rpc(token, "resources/read", json!({"uri": uri}))
+            .await?;
+        let contents = result
+            .get("contents")
+            .and_then(Value::as_array)
+            .and_then(|c| c.first())
+            .ok_or_else(|| anyhow!("{uri}: no contents"))?;
+        let mime = contents
+            .get("mimeType")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if !mime.starts_with("text/html") {
+            bail!("{uri}: not an MCP App ({mime})");
+        }
+        contents
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| anyhow!("{uri}: no text"))
     }
 
     pub async fn call_tool(

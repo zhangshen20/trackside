@@ -283,8 +283,8 @@ async fn user_token_calls_tools_and_keeps_its_own_stable() {
     )
     .await;
     assert!(
-        spoken(&anns).contains("Sample Stayer runs in race 8 at Caulfield"),
-        "{}",
+        spoken(&anns).starts_with("Sample Stayer runs in race 8 at Caulfield"),
+        "a first look at a future card has nothing to catch up on: {}",
         spoken(&anns)
     );
 }
@@ -519,4 +519,77 @@ async fn listeners_can_unfollow_set_a_home_state_and_be_forgotten() {
         "{}",
         spoken(&v)
     );
+}
+
+#[tokio::test]
+async fn screen_tools_point_at_the_mcp_app() {
+    let app = app(false).await;
+    let init = rpc(
+        "initialize",
+        json!({"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}),
+    );
+    let (_, _, v) = send(&app, "POST", "/mcp", None, Some(init)).await;
+    let caps = &v["result"]["capabilities"];
+    assert_eq!(
+        caps["extensions"]["io.modelcontextprotocol/ui"]["mimeTypes"],
+        json!(["text/html;profile=mcp-app"]),
+        "{v}"
+    );
+    assert!(caps["resources"].is_object(), "{v}");
+
+    let (_, _, list) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(rpc("tools/list", json!({}))),
+    )
+    .await;
+    let tools = list["result"]["tools"].as_array().unwrap();
+    let with_app: Vec<_> = tools
+        .iter()
+        .filter(|t| t["_meta"]["ui"]["resourceUri"] == "ui://trackside/race-card.html")
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    for name in [
+        "get_race_card",
+        "race_result",
+        "horse_form",
+        "explain_race",
+        "my_stable",
+    ] {
+        assert!(with_app.contains(&name), "{name} has no app: {with_app:?}");
+    }
+
+    let (_, _, res) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(rpc("resources/list", json!({}))),
+    )
+    .await;
+    assert_eq!(
+        res["result"]["resources"][0]["uri"],
+        "ui://trackside/race-card.html"
+    );
+    let (_, _, read) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(rpc(
+            "resources/read",
+            json!({"uri": "ui://trackside/race-card.html"}),
+        )),
+    )
+    .await;
+    let contents = &read["result"]["contents"][0];
+    assert_eq!(contents["mimeType"], "text/html;profile=mcp-app");
+    let html = contents["text"].as_str().unwrap();
+    assert!(html.contains("ui/initialize") && html.contains("tools/call"));
+    // The view draws what tools return; it must never fetch anything itself or show prices.
+    for banned in ["fetch(", "XMLHttpRequest", "http://", "odds", "betting"] {
+        assert!(!html.contains(banned), "the app contains {banned}");
+    }
 }

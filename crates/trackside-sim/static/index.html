@@ -101,6 +101,11 @@
   .trace .tool { color: var(--accent); }
   .muted { color: var(--muted); font-size: 14px; }
   .hidden { display: none !important; }
+  .app-frame { margin-top: 4px; }
+  .app-frame iframe { width: 100%; height: 360px; border: 0; border-radius: 14px; display: block; background: var(--screen); }
+  .app-label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+  .app-label b { color: var(--good); font-weight: 600; }
+  .trace .via { color: var(--good); }
 </style>
 </head>
 <body>
@@ -249,14 +254,93 @@
     return `<div class="source">Source: ${esc(Array.isArray(src) ? src.join(", ") : src)}</div>`;
   }
 
-  function show(reply) {
-    // The last tool with something to draw decides the screen.
-    const drawn = [...(reply.tools || [])].reverse().find((t) => !t.is_error && t.structured && cards[t.tool] && cards[t.tool](t.structured));
-    const body = drawn ? cards[drawn.tool](drawn.structured) + source(drawn.structured) : "";
+  async function show(reply) {
+    // The last tool with something to draw decides the screen: its MCP App when the server
+    // provides one, otherwise the page's own card.
+    const apps = await loadApps();
+    const drawn = [...(reply.tools || [])].reverse().find((t) => !t.is_error && t.structured && (apps[t.tool] || (cards[t.tool] && cards[t.tool](t.structured))));
+    if (drawn && apps[drawn.tool]) {
+      screen.innerHTML = `<div class="card"><p class="spoken">${esc(reply.text)}</p></div>`;
+      if (await mountApp(apps[drawn.tool], drawn)) { screen.scrollTop = 0; return; }
+    }
+    const body = drawn && cards[drawn.tool] ? (cards[drawn.tool](drawn.structured) || "") + source(drawn.structured) : "";
     screen.innerHTML = `<div class="card"><p class="spoken">${esc(reply.text)}</p>${body}</div>`;
     screen.querySelectorAll("[data-q]").forEach((b) => b.addEventListener("click", () => ask(b.dataset.q)));
     screen.scrollTop = 0;
   }
+
+  // ---- MCP Apps host: the server's own UI for a tool, in a sandboxed iframe ----
+  let appsByTool = null;
+  const appHtml = {};
+  let mounted = null;
+  async function loadApps() {
+    if (appsByTool) return appsByTool;
+    try { const r = await fetch("/sim/api/apps"); if (r.ok) appsByTool = await r.json(); } catch { /* use the page's own cards */ }
+    return appsByTool || {};
+  }
+  async function mountApp(uri, call) {
+    try {
+      if (!appHtml[uri]) {
+        const r = await fetch("/sim/api/ui?uri=" + encodeURIComponent(uri));
+        if (!r.ok) return false;
+        appHtml[uri] = (await r.json()).html;
+      }
+    } catch { return false; }
+    const wrap = document.createElement("div");
+    wrap.className = "app-frame";
+    wrap.innerHTML = `<div class="app-label"><b>MCP App</b> ${esc(uri)} · from the Trackside server</div>`;
+    const frame = document.createElement("iframe");
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.setAttribute("title", "Trackside MCP App");
+    frame.srcdoc = appHtml[uri];
+    wrap.appendChild(frame);
+    screen.querySelector(".card").appendChild(wrap);
+    mounted = { frame, call };
+    return true;
+  }
+  const toolResult = (t) => ({ content: [{ type: "text", text: t.text || "" }], structuredContent: t.structured, isError: !!t.is_error });
+  window.addEventListener("message", async (e) => {
+    if (!mounted || e.source !== mounted.frame.contentWindow) return;
+    const m = e.data, { frame, call } = mounted;
+    if (!m || m.jsonrpc !== "2.0" || !m.method) return;
+    const send = (msg) => frame.contentWindow && frame.contentWindow.postMessage({ jsonrpc: "2.0", ...msg }, "*");
+    const reply = (result) => send({ id: m.id, result });
+    const fail = (code, message) => send({ id: m.id, error: { code, message } });
+    const p = m.params || {};
+    switch (m.method) {
+      case "ui/initialize":
+        reply({
+          protocolVersion: "2026-01-26",
+          hostInfo: { name: "Trackside simulator", version: "1.0.0" },
+          hostCapabilities: { serverTools: {}, logging: {} },
+          hostContext: { theme: "dark", displayMode: "inline", availableDisplayModes: ["inline"], platform: "web", locale: "en-AU", timeZone: "Australia/Melbourne" },
+        });
+        break;
+      case "ui/notifications/initialized":
+        send({ method: "ui/notifications/tool-input", params: { arguments: call.input || {} } });
+        send({ method: "ui/notifications/tool-result", params: toolResult(call) });
+        break;
+      case "ui/notifications/size-changed":
+        if (p.height) frame.style.height = Math.min(Math.max(p.height, 120), 2400) + "px";
+        break;
+      case "tools/call":
+        addTrace([{ tool: p.name, input: p.arguments || {}, via: "app" }]);
+        try {
+          const r = await fetch("/sim/api/tool", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: p.name, arguments: p.arguments || {} }) });
+          const data = await r.json().catch(() => ({}));
+          r.ok ? reply(data) : fail(-32000, data.message || "HTTP " + r.status);
+        } catch (err) { fail(-32000, err.message); }
+        break;
+      case "ui/message": {
+        reply({});
+        const text = (p.content || []).map((c) => c.text).filter(Boolean).join(" ");
+        if (text) ask(text);
+        break;
+      }
+      case "notifications/message": break;
+      default: if (m.id != null) fail(-32601, "Not supported by this host: " + m.method);
+    }
+  });
 
   function addMsg(role, text) {
     if (transcript.querySelector(".muted")) transcript.innerHTML = "";
@@ -270,7 +354,7 @@
     if (trace.firstElementChild && trace.firstElementChild.textContent.startsWith("None yet")) trace.innerHTML = "";
     for (const t of tools) {
       const div = document.createElement("div");
-      div.innerHTML = `<span class="tool">${esc(t.tool)}</span>(${esc(JSON.stringify(t.input))})${t.is_error ? " → error" : ""}`;
+      div.innerHTML = `${t.via ? '<span class="via">MCP App → </span>' : ""}<span class="tool">${esc(t.tool)}</span>(${esc(JSON.stringify(t.input))})${t.is_error ? " → error" : ""}`;
       trace.appendChild(div);
     }
     trace.scrollTop = trace.scrollHeight;
@@ -355,7 +439,7 @@
       if (resp.status === 401) { history.pop(); linked = false; renderAccount(); renderLinkNeeded(data.message); setState("idle"); return; }
       if (!resp.ok) throw new Error(data.message || "HTTP " + resp.status);
       history.push({ role: "assistant", text: data.text });
-      addMsg("assistant", data.text); addTrace(data.tools); show(data); speak(data.text);
+      addMsg("assistant", data.text); addTrace(data.tools); speak(data.text); await show(data);
     } catch (e) {
       history.pop();
       addMsg("error", "Sorry, something went wrong: " + e.message);
