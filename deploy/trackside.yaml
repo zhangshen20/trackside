@@ -311,6 +311,10 @@ Resources:
                   - "arn:aws:bedrock:*::foundation-model/anthropic.*"
                   - "arn:aws:bedrock:*::foundation-model/amazon.nova-*"
                   - !Sub "arn:aws:bedrock:*:${AWS::AccountId}:inference-profile/*"
+              # Spoken answers (Polly voices aren't resources, so this can't be narrower).
+              - Effect: Allow
+                Action: polly:SynthesizeSpeech
+                Resource: "*"
       Tags: [{ Key: Project, Value: trackside }]
 
   SimFunction:
@@ -334,6 +338,7 @@ Resources:
           TRACKSIDE_SIM_MCP_URL: !If [HasDomain, !Sub "https://${DomainName}/mcp", !Sub "${Api.ApiEndpoint}/mcp"]
           TRACKSIDE_SIM_MODEL: !Ref SimModel
           TRACKSIDE_SIM_TODAY: !Ref SimToday
+          TRACKSIDE_SIM_VOICE: Olivia
           TRACKSIDE_SIM_AUTH_DOMAIN: !Sub "https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com"
           TRACKSIDE_SIM_CLIENT_ID: !Ref UserClient
           TRACKSIDE_SIM_CLIENT_SECRET: !GetAtt UserClient.ClientSecret

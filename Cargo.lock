@@ -207,6 +207,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-polly"
+version = "1.121.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6af1edb060ce0cff0a4ddf2af84f04a0a732d8c9f737ddb1452f44747c7b03a7"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-sigv4",
+ "aws-smithy-async",
+ "aws-smithy-eventstream",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "http-body 1.1.0",
+ "http-body-util",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-s3"
 version = "1.150.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3357,6 +3386,7 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-sdk-bedrockruntime",
+ "aws-sdk-polly",
  "aws-smithy-types",
  "axum",
  "base64 0.22.1",
