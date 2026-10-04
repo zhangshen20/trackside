@@ -14,6 +14,7 @@ use tower::ServiceExt;
 
 use crate::auth::Auth;
 use crate::build_app;
+use crate::memory::{InMemory, Memory, Profile};
 use trackside_core::FixtureStore;
 
 const ISSUER: &str = "https://cognito-idp.ap-southeast-2.amazonaws.com/ap-southeast-2_test";
@@ -43,6 +44,10 @@ fn token(scope: &str, client: &str, sub: &str) -> String {
 }
 
 async fn app(with_auth: bool) -> axum::Router {
+    app_with_memory(with_auth, Arc::new(InMemory::default())).await
+}
+
+async fn app_with_memory(with_auth: bool, memory: Arc<dyn Memory>) -> axum::Router {
     let store = Arc::new(
         FixtureStore::load(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -65,15 +70,7 @@ async fn app(with_auth: bool) -> axum::Router {
         None
     };
     // As on Lambda: stateless, and no localhost-only Host check.
-    build_app(
-        store,
-        Default::default(),
-        None,
-        auth,
-        true,
-        true,
-        Default::default(),
-    )
+    build_app(store, memory, None, auth, true, true, Default::default())
 }
 
 async fn send(
@@ -204,7 +201,7 @@ async fn service_token_discovers_but_cannot_call_tools() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 9);
+    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 12);
     let (status, headers, _) = send(
         &app,
         "POST",
@@ -304,7 +301,7 @@ async fn open_server_answers_without_tokens() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 9);
+    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 12);
     let (status, _, _) = send(
         &app,
         "GET",
@@ -391,4 +388,135 @@ async fn missing_result_says_when_there_was_no_meeting() {
         "{text}"
     );
     assert!(text.contains("Caulfield"), "{text}");
+}
+
+#[tokio::test]
+async fn stable_catches_up_on_runs_since_the_last_check() {
+    let memory = Arc::new(InMemory::default());
+    let profile = Profile {
+        horses: vec!["Demo Miler".into(), "Sample Stayer".into()],
+        last_checked: Some("2026-09-20".parse().unwrap()),
+        ..Default::default()
+    };
+    memory.save("local", &profile).await.unwrap();
+    let app = app_with_memory(false, memory.clone()).await;
+    let ask = || call("my_stable", json!({"date": "2026-10-04"}));
+    let (_, _, v) = send(&app, "POST", "/mcp", None, Some(ask())).await;
+    let text = spoken(&v);
+    assert!(
+        text.starts_with("Since you last checked on Sunday 20 September: Demo Miler ran 2nd of 12 at Flemington on Saturday 26 September; Sample Stayer won at Flemington on Saturday 26 September."),
+        "{text}"
+    );
+    assert!(!text.contains("isn't engaged"), "{text}");
+    assert_eq!(v["result"]["structuredContent"]["catch_up"][0]["finish"], 2);
+    // Heard once, the catch-up isn't repeated.
+    let (_, _, v) = send(&app, "POST", "/mcp", None, Some(ask())).await;
+    let text = spoken(&v);
+    assert!(!text.contains("Since you last checked"), "{text}");
+    assert!(
+        text.contains(
+            "Demo Miler isn't engaged on 4 Oct; last start it ran 2nd at Flemington on 26 Sep"
+        ),
+        "{text}"
+    );
+    assert_eq!(
+        memory.load("local").await.unwrap().last_checked,
+        Some("2026-10-04".parse().unwrap())
+    );
+}
+
+#[tokio::test]
+async fn listeners_can_unfollow_set_a_home_state_and_be_forgotten() {
+    let app = app(false).await;
+    for horse in ["Demo Miler", "Sample Stayer"] {
+        send(
+            &app,
+            "POST",
+            "/mcp",
+            None,
+            Some(call("follow_horse", json!({"horse": horse}))),
+        )
+        .await;
+    }
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("unfollow_horse", json!({"horse": "demo miler"}))),
+    )
+    .await;
+    assert_eq!(
+        spoken(&v),
+        "Stopped following Demo Miler. You follow 1 horse."
+    );
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("unfollow_horse", json!({"horse": "Phar Lap"}))),
+    )
+    .await;
+    assert_eq!(
+        spoken(&v),
+        "You weren't following Phar Lap. You follow Sample Stayer."
+    );
+
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("set_home_state", json!({"state": "nsw"}))),
+    )
+    .await;
+    assert_eq!(v["result"]["structuredContent"]["home_state"], "NSW");
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("list_meetings", json!({"date": "2026-09-26"}))),
+    )
+    .await;
+    assert!(
+        spoken(&v).contains("There's no racing in NSW. Flemington in VIC"),
+        "{}",
+        spoken(&v)
+    );
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("set_home_state", json!({"state": "Narnia"}))),
+    )
+    .await;
+    assert!(
+        v.get("error").is_some() || v["result"]["isError"] == true,
+        "{v}"
+    );
+
+    send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("forget_me", json!({}))),
+    )
+    .await;
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("my_stable", json!({}))),
+    )
+    .await;
+    assert!(
+        spoken(&v).starts_with("You aren't following"),
+        "{}",
+        spoken(&v)
+    );
 }
