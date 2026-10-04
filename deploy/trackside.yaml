@@ -673,6 +673,180 @@ Resources:
       AlarmActions: !If [HasAlertEmail, [!Ref AlertTopic], !Ref AWS::NoValue]
       OKActions: !If [HasAlertEmail, [!Ref AlertTopic], !Ref AWS::NoValue]
 
+  # More than half of the explain_race answers that asked Bedrock fell back to the template:
+  # Bedrock is slow, refusing (model access, quota) or answering in words Trackside drops.
+  # Listeners still hear the template sentence, so this is a quality alarm, not an outage.
+  BedrockFallbackRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: trackside-bedrock-fallback-rate
+      AlarmDescription: >-
+        More than half of explain_race's Bedrock answers in 15 minutes (at least three asked)
+        fell back to the template. The Reason property on the Trackside metric lines in
+        /aws/lambda/trackside-mcp says whether it was a timeout, an error or a rejected answer.
+      Metrics:
+        - Id: fallbacks
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: Trackside
+              MetricName: BedrockFallback
+              Dimensions: [{ Name: Tool, Value: explain_race }, { Name: Outcome, Value: found }]
+            Period: 900
+            Stat: Sum
+        - Id: explained
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: Trackside
+              MetricName: Calls
+              Dimensions: [{ Name: Tool, Value: explain_race }, { Name: Outcome, Value: found }]
+            Period: 900
+            Stat: Sum
+        - Id: rate
+          Label: Bedrock fallback rate
+          Expression: IF(explained >= 3, FILL(fallbacks, 0) / explained, 0)
+          ReturnData: true
+      EvaluationPeriods: 1
+      Threshold: 0.5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlertEmail, [!Ref AlertTopic], !Ref AWS::NoValue]
+      OKActions: !If [HasAlertEmail, [!Ref AlertTopic], !Ref AWS::NoValue]
+
+  # One page for the judging window: Lambda and API Gateway's own metrics beside the
+  # Trackside namespace the server writes as Embedded Metric Format log lines (see
+  # crates/trackside-mcp/src/telemetry.rs) and the probe's snapshot age.
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: trackside
+      DashboardBody: !Sub |
+        {
+          "start": "-PT24H",
+          "widgets": [
+            {
+              "type": "metric", "x": 0, "y": 0, "width": 8, "height": 6,
+              "properties": {
+                "title": "MCP Lambda duration (ms)",
+                "region": "${AWS::Region}", "view": "timeSeries", "period": 300,
+                "metrics": [
+                  ["AWS/Lambda", "Duration", "FunctionName", "${Function}", {"stat": "p50", "label": "p50"}],
+                  ["AWS/Lambda", "Duration", "FunctionName", "${Function}", {"stat": "p99", "label": "p99"}]
+                ]
+              }
+            },
+            {
+              "type": "log", "x": 8, "y": 0, "width": 8, "height": 6,
+              "properties": {
+                "title": "Cold starts: Init Duration from the REPORT lines (ms)",
+                "region": "${AWS::Region}", "view": "table",
+                "query": "SOURCE '${LogGroup}' | filter @type = \"REPORT\" and ispresent(@initDuration) | stats count(*) as cold_starts, pct(@initDuration, 50) as init_p50_ms, pct(@initDuration, 99) as init_p99_ms by bin(1h)"
+              }
+            },
+            {
+              "type": "metric", "x": 16, "y": 0, "width": 8, "height": 6,
+              "properties": {
+                "title": "Server start: snapshot load (ms) and cold starts",
+                "region": "${AWS::Region}", "view": "timeSeries", "period": 3600,
+                "metrics": [
+                  ["Trackside", "SnapshotLoadMs", {"stat": "p50", "label": "snapshot load p50"}],
+                  ["Trackside", "SnapshotLoadMs", {"stat": "Maximum", "label": "snapshot load max"}],
+                  ["Trackside", "ColdStart", {"stat": "Sum", "label": "cold starts", "yAxis": "right"}]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 0, "y": 6, "width": 8, "height": 6,
+              "properties": {
+                "title": "Tool calls by tool",
+                "region": "${AWS::Region}", "view": "timeSeries", "stacked": true, "period": 300,
+                "metrics": [
+                  [{"expression": "SELECT SUM(Calls) FROM SCHEMA(Trackside, Outcome, Tool) GROUP BY Tool", "id": "calls", "label": "", "period": 300}]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 8, "y": 6, "width": 8, "height": 6,
+              "properties": {
+                "title": "Tool latency p50 by tool, answered calls (ms)",
+                "region": "${AWS::Region}", "view": "timeSeries", "period": 300,
+                "metrics": [
+                  [{"expression": "SEARCH('{Trackside,Outcome,Tool} MetricName=\"LatencyMs\" Outcome=\"found\"', 'p50', 300)", "id": "p50", "label": ""}]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 16, "y": 6, "width": 8, "height": 6,
+              "properties": {
+                "title": "Tool calls by outcome",
+                "region": "${AWS::Region}", "view": "timeSeries", "stacked": true, "period": 300,
+                "metrics": [
+                  [{"expression": "SELECT SUM(Calls) FROM SCHEMA(Trackside, Outcome, Tool) GROUP BY Outcome", "id": "outcomes", "label": "", "period": 300}]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 0, "y": 12, "width": 8, "height": 6,
+              "properties": {
+                "title": "Errors",
+                "region": "${AWS::Region}", "view": "timeSeries", "period": 300,
+                "metrics": [
+                  ["AWS/Lambda", "Errors", "FunctionName", "${Function}", {"stat": "Sum", "label": "Lambda errors"}],
+                  ["AWS/Lambda", "Throttles", "FunctionName", "${Function}", {"stat": "Sum", "label": "Lambda throttles"}],
+                  [{"expression": "SELECT SUM(Calls) FROM SCHEMA(Trackside, Outcome, Tool) WHERE Outcome = 'error'", "id": "toolerrors", "label": "tool calls that errored", "period": 300}]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 8, "y": 12, "width": 8, "height": 6,
+              "properties": {
+                "title": "API Gateway requests, 4xx and 5xx",
+                "region": "${AWS::Region}", "view": "timeSeries", "period": 300,
+                "metrics": [
+                  ["AWS/ApiGateway", "Count", "ApiId", "${Api}", {"stat": "Sum", "label": "requests", "yAxis": "right"}],
+                  ["AWS/ApiGateway", "4xx", "ApiId", "${Api}", {"stat": "Sum", "label": "4xx"}],
+                  ["AWS/ApiGateway", "5xx", "ApiId", "${Api}", {"stat": "Sum", "label": "5xx"}]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 16, "y": 12, "width": 8, "height": 6,
+              "properties": {
+                "title": "Bedrock: fallbacks to the template, and answer time (ms)",
+                "region": "${AWS::Region}", "view": "timeSeries", "period": 300,
+                "metrics": [
+                  ["Trackside", "BedrockFallback", "Outcome", "found", "Tool", "explain_race", {"stat": "Sum", "label": "fallbacks"}],
+                  ["Trackside", "Calls", "Outcome", "found", "Tool", "explain_race", {"stat": "Sum", "label": "explain_race answers"}],
+                  ["Trackside", "BedrockMs", "Outcome", "found", "Tool", "explain_race", {"stat": "p50", "label": "Bedrock p50 ms", "yAxis": "right"}]
+                ]
+              }
+            },
+            {
+              "type": "metric", "x": 0, "y": 18, "width": 8, "height": 6,
+              "properties": {
+                "title": "Snapshot age from the hourly probe (hours)",
+                "region": "${AWS::Region}", "view": "timeSeries", "period": 3600,
+                "metrics": [
+                  ["Trackside", "SnapshotAgeHours", {"stat": "Maximum", "label": "snapshot age"}]
+                ],
+                "annotations": {"horizontal": [{"label": "probe limit", "value": 26}]}
+              }
+            },
+            {
+              "type": "alarm", "x": 8, "y": 18, "width": 16, "height": 6,
+              "properties": {
+                "title": "Alarms",
+                "alarms": [
+                  "${McpErrorsAlarm.Arn}",
+                  "${Api5xxAlarm.Arn}",
+                  "${BedrockFallbackRateAlarm.Arn}"
+                ]
+              }
+            }
+          ]
+        }
+
 Outputs:
   McpUrl:
     Description: Point MCP clients (Inspector, Alexa+) here.
@@ -686,6 +860,9 @@ Outputs:
     Value: !GetAtt CustomDomain.RegionalDomainName
   FunctionName:
     Value: !Ref Function
+  DashboardUrl:
+    Description: The CloudWatch dashboard (tool calls, latency, cold starts, errors, Bedrock, snapshot age).
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards/dashboard/trackside"
   SimUrl:
     Condition: HasSim
     Description: The simulated Alexa+ experience, for demos and testing.

@@ -310,7 +310,14 @@ async fn probe() -> Result<Vec<String>> {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(26);
-    let age_hours = (chrono::Utc::now().timestamp() - modified) / 3600;
+    let now = chrono::Utc::now();
+    let age_hours = (now.timestamp() - modified) / 3600;
+    // One CloudWatch Embedded Metric Format line: Trackside/SnapshotAgeHours, graphed on the
+    // stack's dashboard. Printed before the limit check so a stale snapshot is graphed too.
+    println!(
+        "{}",
+        snapshot_age_emf(now.timestamp() - modified, now.timestamp_millis())
+    );
     if age_hours > max_hours {
         bail!("snapshot is {age_hours} hours old (limit {max_hours}); the refresh is not running");
     }
@@ -318,6 +325,23 @@ async fn probe() -> Result<Vec<String>> {
 
     eprintln!("probe passed: {}", passed.join(", "));
     Ok(passed)
+}
+
+/// The snapshot's age as an EMF line in the `Trackside` namespace, with no dimensions.
+fn snapshot_age_emf(age_secs: i64, timestamp_ms: i64) -> String {
+    let hours = (age_secs as f64 / 3600.0 * 100.0).round() / 100.0;
+    serde_json::json!({
+        "_aws": {
+            "Timestamp": timestamp_ms,
+            "CloudWatchMetrics": [{
+                "Namespace": "Trackside",
+                "Dimensions": [[]],
+                "Metrics": [{ "Name": "SnapshotAgeHours", "Unit": "None" }],
+            }],
+        },
+        "SnapshotAgeHours": hours,
+    })
+    .to_string()
 }
 
 /// A configuration change retires the function's warm instances, so the next request loads
@@ -421,4 +445,17 @@ async fn build(args: Args) -> Result<()> {
         eprintln!("uploaded {target}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn snapshot_age_is_an_emf_line() {
+        let v: serde_json::Value =
+            serde_json::from_str(&super::snapshot_age_emf(5400, 1_700_000_000_000)).unwrap();
+        assert_eq!(v["SnapshotAgeHours"].as_f64(), Some(1.5));
+        let cw = &v["_aws"]["CloudWatchMetrics"][0];
+        assert_eq!(cw["Namespace"], "Trackside");
+        assert_eq!(cw["Metrics"][0]["Name"], "SnapshotAgeHours");
+    }
 }

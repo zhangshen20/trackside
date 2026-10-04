@@ -7,7 +7,8 @@
 //! Runtime: on AWS Lambda (behind API Gateway) the server runs stateless with plain JSON
 //! responses, since each request may land on a different instance. Locally it listens on
 //! `TRACKSIDE_BIND` (default `127.0.0.1:8000`) with sessions; `TRACKSIDE_STATELESS=1` gives the
-//! Lambda behaviour locally. The endpoint is `/mcp`; `/healthz` answers "ok".
+//! Lambda behaviour locally. The endpoint is `/mcp`; `/healthz` answers with a small JSON
+//! status: `{"ok":true,"snapshot_date":...,"meetings":N,"uptime_s":...}`.
 //!
 //! Auth: with `TRACKSIDE_AUTH_ISSUER` set, `/mcp` requires a Cognito access token and the
 //! server publishes OAuth metadata under `/.well-known/` (see `auth.rs`). Without it the
@@ -19,17 +20,22 @@
 //!
 //! Bedrock: with `TRACKSIDE_BEDROCK_MODEL` set, `explain_race` has a Bedrock model reword its
 //! facts for the ear, falling back to its template sentence (see `summary.rs`).
+//!
+//! Metrics: on Lambda, or with `TRACKSIDE_METRICS=1`, each tool call prints one CloudWatch
+//! Embedded Metric Format line on stdout, and start-up prints one more (see `telemetry.rs`).
 
 mod auth;
 mod clock;
 mod memory;
 mod summary;
+mod telemetry;
 #[cfg(test)]
 mod tests;
 mod tools;
 
 use std::io::Read;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use rmcp::transport::streamable_http_server::{
@@ -41,15 +47,19 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use auth::Auth;
 use memory::Memory;
 use summary::Summariser;
+use telemetry::{Record, Sink, SnapshotInfo};
 use tools::Trackside;
-use trackside_core::{FixtureStore, Store};
+use trackside_core::{Fixture, FixtureStore, Store};
 
-async fn load_store() -> Result<FixtureStore> {
+/// The store to serve, and what `/healthz` says about it.
+async fn load_store() -> Result<(FixtureStore, SnapshotInfo)> {
     let Ok(source) = std::env::var("TRACKSIDE_SNAPSHOT") else {
         let fixture =
             std::env::var("TRACKSIDE_FIXTURE").unwrap_or_else(|_| "fixtures/demo.json".into());
         tracing::info!(%fixture, "serving fixture");
-        return FixtureStore::load(&fixture);
+        let bytes =
+            std::fs::read(&fixture).with_context(|| format!("reading fixture {fixture}"))?;
+        return parse_store(&bytes);
     };
     let bytes = match source.strip_prefix("s3://") {
         Some(rest) => {
@@ -80,13 +90,20 @@ async fn load_store() -> Result<FixtureStore> {
     } else {
         bytes
     };
-    let store = FixtureStore::from_json(&json)?;
+    let loaded = parse_store(&json)?;
     tracing::info!(%source, bytes = json.len(), "serving snapshot");
-    Ok(store)
+    Ok(loaded)
+}
+
+fn parse_store(json: &[u8]) -> Result<(FixtureStore, SnapshotInfo)> {
+    let fixture: Fixture = serde_json::from_slice(json).context("parsing fixture JSON")?;
+    let info = SnapshotInfo::of(&fixture);
+    Ok((FixtureStore::from_fixture(fixture), info))
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let started = Instant::now();
     let on_lambda = std::env::var("AWS_LAMBDA_RUNTIME_API").is_ok();
     // CloudWatch stamps each line itself, so Lambda logs skip the time and the colours.
     tracing_subscriber::registry()
@@ -101,7 +118,13 @@ async fn main() -> Result<()> {
         .with((!on_lambda).then(tracing_subscriber::fmt::layer))
         .init();
 
-    let store: Arc<dyn Store> = Arc::new(load_store().await?);
+    let metrics = telemetry::from_env(on_lambda);
+    let loading = Instant::now();
+    let (store, snapshot) = load_store().await?;
+    if let Some(sink) = &metrics {
+        Record::init(loading.elapsed()).emit(sink.as_ref());
+    }
+    let store: Arc<dyn Store> = Arc::new(store);
     let stateless = on_lambda || std::env::var("TRACKSIDE_STATELESS").is_ok_and(|v| v == "1");
     let auth = Auth::from_env()?;
     match &auth {
@@ -112,7 +135,7 @@ async fn main() -> Result<()> {
     let summariser = Summariser::from_env().await.map(Arc::new);
     let memory = memory::from_env().await;
     let ct = tokio_util::sync::CancellationToken::new();
-    let app = build_app(
+    let app = build_app_with(
         store,
         memory,
         summariser,
@@ -121,6 +144,11 @@ async fn main() -> Result<()> {
         stateless,
         on_lambda,
         ct.clone(),
+        Ops {
+            metrics,
+            snapshot,
+            started,
+        },
     );
 
     if on_lambda {
@@ -141,7 +169,27 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// The operational side of the app: where metric lines go, and what `/healthz` reports.
+#[derive(Clone)]
+struct Ops {
+    metrics: Option<Arc<dyn Sink>>,
+    snapshot: SnapshotInfo,
+    started: Instant,
+}
+
+impl Default for Ops {
+    fn default() -> Self {
+        Self {
+            metrics: None,
+            snapshot: SnapshotInfo::default(),
+            started: Instant::now(),
+        }
+    }
+}
+
+/// The app with no metrics and an empty health report (the tests' default).
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(test), allow(dead_code))]
 fn build_app(
     store: Arc<dyn Store>,
     memory: Arc<dyn Memory>,
@@ -152,6 +200,32 @@ fn build_app(
     on_lambda: bool,
     ct: tokio_util::sync::CancellationToken,
 ) -> axum::Router {
+    build_app_with(
+        store,
+        memory,
+        summariser,
+        clock,
+        auth,
+        stateless,
+        on_lambda,
+        ct,
+        Ops::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_app_with(
+    store: Arc<dyn Store>,
+    memory: Arc<dyn Memory>,
+    summariser: Option<Arc<Summariser>>,
+    clock: Arc<dyn clock::Clock>,
+    auth: Option<Arc<Auth>>,
+    stateless: bool,
+    on_lambda: bool,
+    ct: tokio_util::sync::CancellationToken,
+    ops: Ops,
+) -> axum::Router {
+    let metrics = ops.metrics.clone();
     let mut config =
         StreamableHttpServerConfig::default().with_cancellation_token(ct.child_token());
     if stateless {
@@ -174,7 +248,8 @@ fn build_app(
                 memory.clone(),
                 summariser.clone(),
                 clock.clone(),
-            ))
+            )
+            .with_telemetry(metrics.clone()))
         },
         LocalSessionManager::default().into(),
         config,
@@ -207,6 +282,17 @@ fn build_app(
             )
         }
     };
-    app.route("/healthz", axum::routing::get(|| async { "ok" }))
+    app.route("/healthz", axum::routing::get(move || healthz(ops.clone())))
         .layer(CorsLayer::permissive())
+}
+
+/// Liveness plus what is being served. Never writes a metric line: health checks would
+/// drown the tool calls.
+async fn healthz(ops: Ops) -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({
+        "ok": true,
+        "snapshot_date": ops.snapshot.snapshot_date,
+        "meetings": ops.snapshot.meetings,
+        "uptime_s": ops.started.elapsed().as_secs(),
+    }))
 }

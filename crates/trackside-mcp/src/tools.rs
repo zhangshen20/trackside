@@ -23,6 +23,7 @@ use crate::auth::Caller;
 use crate::clock::Clock;
 use crate::memory::{Memory, Profile};
 use crate::summary::Summariser;
+use crate::telemetry::{self, Sink};
 
 /// How many days past the asked date a stable report looks for each horse's next run.
 /// Racing Australia publishes fields two to three days ahead, so four days covers every
@@ -39,6 +40,8 @@ pub struct Trackside {
     summariser: Option<Arc<Summariser>>,
     /// Where "today" comes from (see `clock.rs`).
     clock: Arc<dyn Clock>,
+    /// Where each call's metric line goes, when metrics are on (see `telemetry.rs`).
+    telemetry: Option<Arc<dyn Sink>>,
 }
 
 /// Whose profile a request reads: the OAuth subject when the server checks tokens, or one
@@ -201,8 +204,14 @@ fn next_run_words(e: &Engagement, from: NaiveDate, at: Option<String>) -> String
     format!("runs {when} in {race}{at}{barrier}{rider}")
 }
 
+/// What a listener hears when the data behind an answer can't be read. The detail (an S3
+/// key, a DynamoDB error) goes to the log with the call's request id, never to the host.
+pub const INTERNAL_SPOKEN: &str =
+    "Trackside couldn't read its data just now; try again in a moment.";
+
 fn internal(err: anyhow::Error) -> McpError {
-    McpError::internal_error(err.to_string(), None)
+    tracing::error!(error = ?err, "tool call failed reading its data");
+    McpError::internal_error(INTERNAL_SPOKEN, None)
 }
 
 fn answer(spoken: String, structured: serde_json::Value) -> CallToolResult {
@@ -436,7 +445,14 @@ impl Trackside {
             memory,
             summariser,
             clock,
+            telemetry: None,
         }
+    }
+
+    /// Sends each tool call's metric line to `sink`.
+    pub fn with_telemetry(mut self, sink: Option<Arc<dyn Sink>>) -> Self {
+        self.telemetry = sink;
+        self
     }
 
     /// Today's date in Melbourne, the racing calendar's day.
@@ -1872,6 +1888,46 @@ fn capitalise(s: &str) -> String {
 
 #[tool_handler]
 impl ServerHandler for Trackside {
+    /// The router's call, timed and classified for the call's metric line, inside a span that
+    /// carries the tool and the request id so any error logged during the call can be traced.
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        let router = Self::tool_router();
+        // Only a tool the server has becomes a dimension; anything else a caller sends is
+        // "unknown", so a metric can't carry a caller's text.
+        let tool = if router.get(&request.name).is_some() {
+            request.name.to_string()
+        } else {
+            "unknown".to_string()
+        };
+        let request_id = telemetry::request_id(context.extensions.get::<http::request::Parts>());
+        let span = tracing::info_span!(
+            "tool_call",
+            tool = %tool,
+            request_id = request_id.as_deref().unwrap_or("-")
+        );
+        let started = std::time::Instant::now();
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        let (result, notes) =
+            telemetry::noting(tracing::Instrument::instrument(router.call(tcc), span)).await;
+        if let Some(sink) = &self.telemetry {
+            let mut record = telemetry::Record::tool_call(
+                &tool,
+                telemetry::classify(&result),
+                started.elapsed(),
+            )
+            .merge(notes);
+            if let Some(id) = &request_id {
+                record = record.property("RequestId", id);
+            }
+            record.emit(sink.as_ref());
+        }
+        result
+    }
+
     fn get_info(&self) -> ServerConfig {
         let mut extensions = ExtensionCapabilities::new();
         extensions.insert(

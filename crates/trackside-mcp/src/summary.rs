@@ -7,13 +7,15 @@
 //! back to the template sentence the tool builds anyway. Without the variable the tool never
 //! calls Bedrock.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use aws_sdk_bedrockruntime::types::{
     ContentBlock, ConversationRole, ConverseOutput, InferenceConfiguration, Message,
     SystemContentBlock,
 };
+
+use crate::telemetry::{self, FallbackReason};
 
 const SYSTEM: &str = "You explain Australian thoroughbred races to newcomers, for a voice assistant that reads your answer aloud. \
 Use only the facts in the JSON you are given; never invent form, history or people. \
@@ -91,8 +93,27 @@ impl Summariser {
     }
 
     /// Two or three spoken sentences from `facts`, or an error when Bedrock is slow, fails or
-    /// answers with betting language.
+    /// answers with betting language. Bedrock's latency, and the reason for any fallback, go
+    /// on the tool call's metric line (see `telemetry.rs`).
     pub async fn explain(&self, facts: &serde_json::Value) -> Result<String> {
+        let started = Instant::now();
+        let raw = self.converse(facts).await;
+        telemetry::note_bedrock(started.elapsed());
+        let (reason, result) = match raw {
+            Ok(text) => (FallbackReason::Rejected, clean(&text)),
+            Err(err) if err.downcast_ref::<tokio::time::error::Elapsed>().is_some() => {
+                (FallbackReason::Timeout, Err(err))
+            }
+            Err(err) => (FallbackReason::Error, Err(err)),
+        };
+        if result.is_err() {
+            telemetry::note_fallback(reason);
+        }
+        result
+    }
+
+    /// Bedrock's raw answer to `facts`.
+    async fn converse(&self, facts: &serde_json::Value) -> Result<String> {
         let prompt = format!(
             "Explain this race for a racing newcomer.\n\n{}",
             serde_json::to_string_pretty(facts)?
@@ -128,7 +149,7 @@ impl Summariser {
             .map(String::as_str)
             .collect::<Vec<_>>()
             .join(" ");
-        clean(&text)
+        Ok(text)
     }
 }
 

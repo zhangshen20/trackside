@@ -20,7 +20,18 @@ It checks `initialize` (protocol 2025-11-25), `tools/list` (the core tools, each
 
 The script sends no `Mcp-Session-Id`, so a local server must run stateless, the way Lambda does. `TRACKSIDE_TODAY=2026-10-14` fixes the local server's clock on the Wednesday before the fixture's Caulfield Cup card, which the fixture check "my_stable names the next run" relies on ("Sample Stayer runs on Saturday in the Caulfield Cup"). Leave it unset for the deployed server, whose data is live. The simulator has its own pin, `TRACKSIDE_SIM_TODAY`, and shows "Saturday 17 October (simulated)" under its clock when it is set, so a viewer knows why "this Saturday" lands on snapshot racing.
 
+`/healthz` (next to `/mcp`, never behind auth) answers `200` with `{"ok":true,"snapshot_date":"2026-10-17","meetings":N,"uptime_s":S}`: the last date the snapshot has a meeting on, how many meetings it holds, and the process's uptime. `--wait-for` polls it until it answers, and the smoke test checks its shape, plus that a warm `get_race_card` call takes under 3 seconds by curl's `time_total`. It writes no metric line.
+
 Note that it calls `follow_horse`, which writes to the smoke client's own stable (each token subject has its own), and then `unfollow_horse` to take it out again. On the deployed stack that stable is stored in DynamoDB.
+
+### Response times: `scripts/perf.sh`
+
+```sh
+MCP_URL=http://127.0.0.1:8000/mcp scripts/perf.sh --fixture        # local server on fixtures/demo.json
+MCP_TOKEN=$(scripts/token.sh) scripts/perf.sh -n 50                 # the deployed endpoint, 50 calls per tool
+```
+
+It times the first request (`initialize`), then makes one warming call and N timed calls (default 20) to each read-only tool, and prints p50 and p95 per tool in milliseconds, by curl's `time_total`, so network and API Gateway are included. Against a Lambda that has just been deployed or recycled, the first request is the cold start; the script's header shows the `aws lambda update-function-configuration` call that recycles it on demand. The same arguments as the smoke test apply (`DATE`, `VENUE`, ...). With `TRACKSIDE_METRICS=1` a local server also prints each call's metric line, as Lambda does.
 
 ### Interactive: MCP Inspector
 
@@ -81,7 +92,7 @@ Run on the Mac that deploys (`HR_ENV=staging SNAPSHOT_FROM=... SNAPSHOT_TO=... d
 - [ ] `race_result` for a race run on the last day has a fastest last 600 m (sectionals joined).
 - [ ] `horse_form` for that race's winner lists the win as its latest start (results fold into form).
 - [ ] No bookmaker brand in any meeting or race name for the new dates (`list_meetings` text).
-- [ ] Cold start is acceptable: `time scripts/smoke.sh` after a deploy; the first call should finish well inside Alexa+'s turn budget.
+- [ ] Cold start is acceptable: `scripts/perf.sh` straight after a deploy (its first request lands on a cold instance); it should finish well inside Alexa+'s turn budget, and the `trackside` dashboard's cold-start table shows the Init Duration.
 - [ ] CloudWatch: no `ERROR` lines for the Lambda since the deploy (`aws logs tail /aws/lambda/<function> --since 10m`).
 - [ ] With OAuth on: an unauthenticated `initialize` returns 401, `/.well-known/oauth-protected-resource` resolves, and the smoke test passes with `MCP_TOKEN`.
 
