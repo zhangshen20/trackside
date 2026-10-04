@@ -138,8 +138,9 @@ impl McpClient {
         .await
     }
 
-    /// The HTML of an MCP App (`resources/read` on its `ui://` resource).
-    pub async fn read_app(&self, token: Option<&str>, uri: &str) -> Result<String> {
+    /// The HTML of an MCP App (`resources/read` on its `ui://` resource) with the content
+    /// item's `_meta`, whose `ui.csp` says which domains the App may reach.
+    pub async fn read_app(&self, token: Option<&str>, uri: &str) -> Result<(String, Value)> {
         let result = self
             .rpc(token, "resources/read", json!({"uri": uri}))
             .await?;
@@ -155,11 +156,13 @@ impl McpClient {
         if !mime.starts_with("text/html") {
             bail!("{uri}: not an MCP App ({mime})");
         }
-        contents
+        let text = contents
             .get("text")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .ok_or_else(|| anyhow!("{uri}: no text"))
+            .ok_or_else(|| anyhow!("{uri}: no text"))?;
+        let meta = contents.get("_meta").cloned().unwrap_or(Value::Null);
+        Ok((text, meta))
     }
 
     pub async fn call_tool(

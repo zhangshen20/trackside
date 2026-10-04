@@ -14,8 +14,8 @@
 <style>
   :root {
     --bg: #f6f4ee; --panel: #ffffff; --panel-2: #efece3; --line: #ddd7c8; --text: #18211c;
-    --muted: #5f6b63; --turf: #1f6b45; --turf-soft: #dcefe3; --gold: #b8860b; --gold-soft: #f6e7bf;
-    --silver: #8a949c; --bronze: #a0612f; --danger: #9b2c2c; --radius: 14px;
+    --muted: #5f6b63; --turf: #1f6b45; --turf-soft: #dcefe3; --gold: #7a5a05; --gold-soft: #f6e7bf;
+    --silver: #5e6973; --bronze: #a0612f; --danger: #9b2c2c; --radius: 14px;
     color-scheme: light;
   }
   :root[data-theme="dark"] {
@@ -47,9 +47,11 @@
   .meta { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .form { display: flex; gap: 3px; }
   .form i { width: 14px; height: 14px; border-radius: 4px; display: grid; place-items: center; font: 600 10px/1 system-ui, sans-serif; font-style: normal; background: var(--panel-2); color: var(--muted); }
-  .form i.p1 { background: var(--gold); color: #1a1405; }
-  .form i.p2 { background: var(--silver); color: #10161b; }
+  .form i.p1 { background: var(--gold); color: #fff; }
+  .form i.p2 { background: var(--silver); color: #fff; }
   .form i.p3 { background: var(--bronze); color: #fff; }
+  :root[data-theme="dark"] .form i.p1, :root[data-theme="dark"] .form i.p3 { color: #1a1405; }
+  :root[data-theme="dark"] .form i.p2 { color: #10161b; }
   .form i.spell { background: transparent; width: 6px; }
   .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
   .btn { border: 0; border-radius: 999px; padding: 8px 14px; background: var(--turf); color: #fff; font-weight: 600; font-size: 14px; }
@@ -140,6 +142,7 @@
     switch (m.method) {
       case "ui/notifications/tool-input": loading(); break;
       case "ui/notifications/tool-result": render(m.params || {}); break;
+      case "ui/notifications/tool-cancelled": app.innerHTML = `<p class="muted">${esc((m.params || {}).reason || "That request was cancelled.")}</p>`; break;
       case "ui/notifications/host-context-changed": applyContext(m.params || {}); break;
       case "ui/resource-teardown": post({ jsonrpc: "2.0", id: m.id, result: {} }); break;
       case "ping": post({ jsonrpc: "2.0", id: m.id, result: {} }); break;
@@ -150,8 +153,11 @@
   function applyContext(ctx) {
     if (ctx.theme) document.documentElement.dataset.theme = ctx.theme;
   }
+  // Size reports wait until the ui/initialize handshake is done; the first goes out right after.
+  let ready = false;
+  const size = () => ({ width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight });
   new ResizeObserver(() => {
-    if (hosted) notify("ui/notifications/size-changed", { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight });
+    if (hosted && ready) notify("ui/notifications/size-changed", size());
   }).observe(document.body);
 
   // ---- Views, chosen by the shape of the tool's structured content ----
@@ -197,7 +203,7 @@
         <button class="runner${r.scratched ? " scratched" : ""}" data-horse="${esc(r.horse)}" ${r.scratched ? "disabled" : ""}>
           <span class="no">${esc(r.number)}</span>
           <span style="min-width:0"><div class="name">${esc(r.horse)}</div><div class="who">${esc(r.jockey)} · ${esc(r.trainer)}</div></span>
-          <span class="side">${formStrip(r.last10)}<span class="meta">${r.barrier ? "Bar " + esc(r.barrier) : ""}${r.weight_kg ? " · " + esc(r.weight_kg) + " kg" : ""}</span></span>
+          <span class="side">${formStrip(r.last10)}<span class="meta">${[r.barrier && "Bar " + r.barrier, r.weight_kg && r.weight_kg + " kg"].filter(Boolean).map(esc).join(" · ")}</span></span>
         </button>`).join("")}</div>
       <div class="actions"><button class="btn" id="explain">Explain this race</button><button class="btn quiet" id="result">Result</button></div>
       <div id="extra"></div>
@@ -304,9 +310,12 @@
   }
 
   function explain(s) {
-    app.innerHTML = `<div class="eyebrow">Race explained</div><h1>${esc(s.race)}</h1>
+    // The horses with the best recent form, as names or as {horse, ...} facts. Past form only.
+    const formed = (s.strongest_recent_form || s.contenders || []).map((h) => (typeof h === "string" ? h : h && h.horse)).filter(Boolean);
+    const number = s.race_number ?? (s.facts || {}).race_number;
+    app.innerHTML = `<div class="eyebrow">Race explained</div><h1>${esc(s.race || (number ? "Race " + number : "Race"))}</h1>
       <div class="note" style="margin-top:0">${esc(s.explanation)}</div>
-      ${s.contenders && s.contenders.length ? `<h2 style="margin-top:14px">Strongest recent form</h2><div class="field">${s.contenders.map((h) => `<button class="runner" data-horse="${esc(h)}"><span class="no">·</span><span class="name">${esc(h)}</span><span class="meta">Form ›</span></button>`).join("")}</div>` : ""}
+      ${formed.length ? `<h2 style="margin-top:14px">Strongest recent form</h2><div class="field">${formed.map((h) => `<button class="runner" data-horse="${esc(h)}"><span class="no">·</span><span class="name">${esc(h)}</span><span class="meta">Form ›</span></button>`).join("")}</div>` : ""}
       <div class="drawer" id="drawer" hidden></div>
       <div class="source">Source: ${esc(s.source || "Racing Australia")}${s.written_by && s.written_by.startsWith("bedrock") ? " · worded by Amazon Bedrock from these facts" : ""}</div>`;
     wireHorses();
@@ -338,7 +347,7 @@
     protocolVersion: "2026-01-26",
     appInfo: { name: "Trackside race card", version: "1.0.0" },
     appCapabilities: { availableDisplayModes: ["inline"] },
-  }).then((r) => { applyContext((r && r.hostContext) || {}); notify("ui/notifications/initialized", {}); })
+  }).then((r) => { applyContext((r && r.hostContext) || {}); notify("ui/notifications/initialized", {}); ready = true; notify("ui/notifications/size-changed", size()); })
     .catch(() => { app.innerHTML = '<p class="muted">The host did not answer.</p>'; });
 })();
 </script>
