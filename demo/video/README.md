@@ -9,7 +9,7 @@ race day is one command.
 ```sh
 demo/video/make.sh                      # -> demo/video/work/trackside-demo.mp4
 VOICE_ENGINE=polly demo/video/make.sh   # insist on Polly (needs polly:SynthesizeSpeech)
-SCENES=06-racecard demo/video/make.sh   # re-record one scene, keep the rest
+SCENES=06-stable demo/video/make.sh     # re-record one scene, keep the rest
 ```
 
 Needs cargo, node with `playwright` and a Chromium it can launch, python3 with boto3, ffmpeg,
@@ -21,16 +21,19 @@ that can read Trackside's bucket, read and write the memory table, call Bedrock 
 | File | Does |
 | --- | --- |
 | `scenes.json` | The storyboard: each scene is a title card or a question to the simulator, with the narration around it and what to tap. |
-| `record.cjs` | Drives the simulator with Playwright and saves a screenshot per step (idle, typing, thinking, answer, tap), plus the answer text. Keyframes rather than a screen recording keep the cut deterministic and hide Bedrock's latency. An `expect` pattern makes it ask again when the model answers about the wrong thing. |
+| `record.cjs` | Drives the simulator with Playwright and saves a screenshot per step (idle, typing, thinking, answer, hover, tap), plus the answer text. Keyframes rather than a screen recording keep the cut deterministic and hide Bedrock's latency. An `expect` pattern makes it ask again when the model answers about the wrong thing. |
 | `awsx.py` | Runs a command with the deploy role's credentials, downloads the snapshot, and edits the demo listener's memory (`forget`, `last-checked`) between scenes. |
 | `voice.py` | Speaks narration and questions in the narrator's voice and Trackside's answers in Polly's "Olivia", the simulator's own voice. Falls back to espeak-ng with a warning. |
-| `render.py` | Holds each frame for as long as the voices need, mixes the audio, concatenates the scenes, burns in captions and normalises loudness. |
-| `cards/` | The title, "three days later", architecture and closing cards (HTML, rendered by Playwright). |
+| `render.py` | Holds each frame for as long as the voices need, mixes the audio, concatenates the scenes, burns in captions (one sentence at a time, in a band under the simulator) and normalises loudness. Narration and tap lines are read from `scenes.json` at render time, so rewording a line needs no re-record. |
+| `cards/` | The title, "days later", architecture and closing cards (HTML, rendered by Playwright). |
+| `fonts.conf` | A fontconfig alias so Chromium draws the simulator's `system-ui` as Inter, the font the design uses, whatever the build box has installed. |
 
 The listener's memory for the demo is the key the server uses without auth (`local`) in the real
-`trackside-listeners` table; `awsx.py memory last-checked 2026-10-01` is what turns "How's my
-stable?" into a catch-up since Thursday. Nothing is faked on screen: every answer is what the
-server said to that question when the frames were taken.
+`trackside-listeners` table; the `memory` field on a scene (`forget`, or `last-checked:2026-09-20`)
+is applied before it is recorded, which is what turns "How's my stable?" into a catch-up since
+that day. Nothing is faked on screen: every answer is what the server said to that question when
+the frames were taken. The questions name a day ("today", "on Saturday") relative to Sydney time,
+so check them in `scenes.json` before a re-cut.
 
 Outputs land in `work/` (ignored by git): `frames/`, `audio/`, `segments/`, `timeline.json`,
 `voices.json`, `captions.srt` and the MP4.
