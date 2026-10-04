@@ -35,6 +35,8 @@
   .chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 999px; background: var(--panel-2); color: var(--muted); font-size: 13px; border: 0; }
   .chip.grade { background: var(--gold-soft); color: var(--gold); font-weight: 650; }
   .chip.turf { background: var(--turf-soft); color: var(--turf); }
+  .chip.follow { background: var(--gold-soft); color: var(--gold); font-size: 11px; font-weight: 650; padding: 1px 8px; margin-right: 6px; vertical-align: 1px; }
+  .star { color: var(--gold); }
   .field { display: grid; gap: 6px; }
   .runner { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 10px; align-items: center; width: 100%; text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 9px 12px; }
   .runner:hover, .runner:focus-visible { border-color: var(--turf); outline: none; }
@@ -109,6 +111,10 @@
     if (!n) return "";
     return n >= 1e6 ? "$" + (n / 1e6).toFixed(2).replace(/\.?0+$/, "") + "m" : "$" + n.toLocaleString("en-AU");
   };
+  // Whether the listener follows `horse`: the tools list the stable's names in `following`.
+  const horseKey = (h) => String(h || "").toLowerCase().replace(/\s*\([^)]*\)\s*$/, "").replace(/[^a-z0-9]/g, "");
+  const follows = (following, horse) => (following || []).some((h) => horseKey(h) === horseKey(horse));
+  const followChip = (following, horse) => (follows(following, horse) ? '<span class="chip follow">Following</span>' : "");
 
   // ---- MCP Apps bridge: JSON-RPC over postMessage with the host ----
   const hosted = window.parent !== window;
@@ -202,7 +208,7 @@
       <div class="field">${(c.runners || []).map((r) => `
         <button class="runner${r.scratched ? " scratched" : ""}" data-horse="${esc(r.horse)}" ${r.scratched ? "disabled" : ""}>
           <span class="no">${esc(r.number)}</span>
-          <span style="min-width:0"><div class="name">${esc(r.horse)}</div><div class="who">${esc(r.jockey)} · ${esc(r.trainer)}</div></span>
+          <span style="min-width:0"><div class="name">${followChip(s.following, r.horse)}${esc(r.horse)}</div><div class="who">${esc(r.jockey)} · ${esc(r.trainer)}</div></span>
           <span class="side">${formStrip(r.last10)}<span class="meta">${[r.barrier && "Bar " + r.barrier, r.weight_kg && r.weight_kg + " kg"].filter(Boolean).map(esc).join(" · ")}</span></span>
         </button>`).join("")}</div>
       <div class="actions"><button class="btn" id="explain">Explain this race</button><button class="btn quiet" id="result">Result</button></div>
@@ -213,7 +219,7 @@
     const args = { venue: s.venue, race_number: c.race_number, date: s.date };
     document.getElementById("explain").onclick = (e) => inline(e.target, "explain_race", args, (r) => `<div class="note">${esc(r.structuredContent.explanation)}</div>`);
     document.getElementById("result").onclick = (e) => inline(e.target, "race_result", args, (r) =>
-      r.structuredContent.result ? resultBody(r.structuredContent.result) + runLines(r.structuredContent.run) : `<div class="note">${esc(r.content.map((x) => x.text).join(" "))}</div>`);
+      r.structuredContent.result ? resultBody(r.structuredContent.result, r.structuredContent.following) + runLines(r.structuredContent.run) : `<div class="note">${esc(r.content.map((x) => x.text).join(" "))}</div>`);
   }
 
   // Where each runner has usually settled in its past races (not a prediction).
@@ -245,18 +251,18 @@
     finally { button.disabled = false; }
   }
 
-  function resultBody(r) {
+  function resultBody(r, following) {
     const placings = r.placings || [];
     const top = placings.filter((p) => p.position >= 1 && p.position <= 3);
     const rest = placings.filter((p) => p.position > 3);
     const f = r.fastest_last_600;
     return `
       <div class="podium">${top.map((p) => `<button class="place p${p.position}" data-horse="${esc(p.horse)}">
-        <div class="pos">${ord(p.position)}</div><div class="name">${esc(p.horse)}</div>
+        <div class="pos">${ord(p.position)}</div><div class="name">${follows(following, p.horse) ? '<span class="star" title="You follow this horse">★</span> ' : ""}${esc(p.horse)}</div>
         <div class="who">${esc(p.jockey)}${p.position > 1 && p.margin_lengths != null ? " · " + esc(p.margin_lengths) + " L" : ""}</div></button>`).join("")}</div>
       ${f ? `<div class="flash"><span class="chip turf">Fastest last 600 m</span><span><b>${esc(f.last_600_s)}s</b> ${esc(f.horse)}</span></div>` : ""}
       <div class="field">${rest.map((p) => `<button class="runner" data-horse="${esc(p.horse)}"><span class="no">${esc(p.position)}</span>
-        <span style="min-width:0"><div class="name">${esc(p.horse)}</div><div class="who">${esc(p.jockey)}</div></span>
+        <span style="min-width:0"><div class="name">${followChip(following, p.horse)}${esc(p.horse)}</div><div class="who">${esc(p.jockey)}</div></span>
         <span class="meta">${p.margin_lengths != null ? esc(p.margin_lengths) + " L" : ""}</span></button>`).join("")}</div>
       <div class="meta" style="margin-top:8px">${[r.track_condition, r.winning_time && "Time " + r.winning_time].filter(Boolean).map(esc).join(" · ")}</div>`;
   }
@@ -264,7 +270,7 @@
   function raceResult(s) {
     const r = s.result;
     app.innerHTML = `<div class="eyebrow">Result · ${esc(day(r.date))}</div><h1>${esc(r.venue)} race ${esc(r.race_number)}</h1>
-      ${resultBody(r)}${runLines(s.run)}<div class="drawer" id="drawer" hidden></div>
+      ${resultBody(r, s.following)}${runLines(s.run)}<div class="drawer" id="drawer" hidden></div>
       <div class="source">Source: ${esc([].concat(s.source || "Racing Australia").join(", "))} · Tap a horse for its form</div>`;
     wireHorses();
   }
@@ -300,7 +306,7 @@
       <div class="muted" style="margin-bottom:10px">Trained by ${esc(f.trainer)}${s.run_style ? ` · <span class="chip turf">${esc(s.run_style.phrase.replace(/^usually /, "Usually "))}</span>` : ""}</div>
       <div class="records">${recs}</div>
       <div class="starts">${starts || '<div class="muted">No recent starts on file.</div>'}</div>
-      <div class="actions"><button class="btn" data-follow="${esc(f.horse)}">Follow ${esc(f.horse)}</button></div>
+      <div class="actions"><button class="btn" data-follow="${esc(f.horse)}"${s.following ? " disabled" : ""}>${s.following ? "Following" : "Follow " + esc(f.horse)}</button></div>
       ${into === app ? `<div class="source">Source: ${esc(s.source || "Racing Australia")}</div>` : ""}`;
     into.querySelector("[data-follow]").onclick = async (e) => {
       const b = e.target; b.disabled = true;

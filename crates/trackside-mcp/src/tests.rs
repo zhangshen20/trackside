@@ -2364,3 +2364,163 @@ async fn a_venue_word_says_which_venue_it_took() {
         spoken(&v)
     );
 }
+
+// ---- stable-everywhere ----
+
+/// The app on the demo fixture for a listener who follows `horses`.
+async fn app_following(horses: &[&str]) -> axum::Router {
+    let memory = Arc::new(InMemory::default());
+    let profile = Profile {
+        horses: horses.iter().map(|h| h.to_string()).collect(),
+        ..Default::default()
+    };
+    memory.save("local", &profile).await.unwrap();
+    app_with_memory(false, memory).await
+}
+
+async fn ask_stable(app: &axum::Router, tool: &str, args: Value) -> (String, Value) {
+    let (_, _, v) = send(app, "POST", "/mcp", None, Some(call(tool, args))).await;
+    (spoken(&v), v["result"]["structuredContent"].clone())
+}
+
+/// Race cards, results, the day's meetings, form and explanations each end on the
+/// listener's own horses, and say so in structured content for screens.
+#[tokio::test]
+async fn cards_results_and_meetings_name_the_listeners_horses() {
+    let card = json!({"venue": "Caulfield", "race_number": 8, "date": "2026-10-17"});
+    let result = json!({"venue": "Flemington", "race_number": 7, "date": "2026-09-26"});
+    let app = app_following(&["Sample Stayer", "Demo Miler"]).await;
+
+    let (text, s) = ask_stable(&app, "get_race_card", card.clone()).await;
+    assert!(
+        text.ends_with("Your horses Sample Stayer and Demo Miler are in it, Sample Stayer from barrier 4 with J. Example up and Demo Miler from barrier 11 with A. Rider up."),
+        "{text}"
+    );
+    assert_eq!(s["following"], json!(["Sample Stayer", "Demo Miler"]));
+
+    let (text, s) = ask_stable(&app, "race_result", result.clone()).await;
+    assert!(
+        text.ends_with("Your horses Sample Stayer and Demo Miler were in it. Sample Stayer won it, and came from 5th at the 800. Demo Miler ran 2nd, 0.8 lengths from the winner, and came from 9th at the 800."),
+        "{text}"
+    );
+    assert_eq!(s["following"], json!(["Sample Stayer", "Demo Miler"]));
+
+    let (text, s) = ask_stable(&app, "list_meetings", json!({"date": "2026-10-17"})).await;
+    assert!(
+        text.ends_with(
+            "Your horses Sample Stayer and Demo Miler run in race 8 at Caulfield at 5 pm."
+        ),
+        "{text}"
+    );
+    assert_eq!(s["following"], json!(["Sample Stayer", "Demo Miler"]));
+
+    let (text, s) = ask_stable(&app, "horse_form", json!({"horse": "Demo Miler"})).await;
+    assert!(text.ends_with("You're following it."), "{text}");
+    assert_eq!(s["following"], true);
+
+    let (text, s) = ask_stable(&app, "explain_race", card.clone()).await;
+    assert!(
+        text.ends_with("Your horses Sample Stayer and Demo Miler are in it, Sample Stayer from barrier 4 with J. Example up and Demo Miler from barrier 11 with A. Rider up."),
+        "{text}"
+    );
+    assert_eq!(s["following"], json!(["Sample Stayer", "Demo Miler"]));
+
+    // One horse is "Your horse", as the stable spells it, with its barrier and rider.
+    let app = app_following(&["sample stayer"]).await;
+    let (text, s) = ask_stable(&app, "get_race_card", card.clone()).await;
+    assert!(
+        text.ends_with("Your horse sample stayer is in it, barrier 4, with J. Example up."),
+        "{text}"
+    );
+    assert_eq!(s["following"], json!(["sample stayer"]));
+    let (text, _) = ask_stable(&app, "list_meetings", json!({"date": "2026-10-17"})).await;
+    assert!(
+        text.ends_with("Your horse sample stayer runs in race 8 at Caulfield at 5 pm."),
+        "{text}"
+    );
+    let app = app_following(&["Demo Miler"]).await;
+    let (text, _) = ask_stable(&app, "race_result", result.clone()).await;
+    assert!(
+        text.ends_with("Your horse Demo Miler ran 2nd, 0.8 lengths from the winner, and came from 9th at the 800."),
+        "{text}"
+    );
+
+    // A scratched horse is said to be scratched, on the card and in the day's meetings.
+    let app = app_following(&["Late Change"]).await;
+    let (text, _) = ask_stable(&app, "get_race_card", card.clone()).await;
+    assert!(
+        text.ends_with("Your horse Late Change has been scratched."),
+        "{text}"
+    );
+    let (text, s) = ask_stable(&app, "list_meetings", json!({"date": "2026-10-17"})).await;
+    assert!(
+        text.ends_with("Your horse Late Change from race 8 at Caulfield has been scratched."),
+        "{text}"
+    );
+    assert_eq!(s["following"], json!(["Late Change"]));
+
+    // Horses in different races are listed in one sentence, in the order the meetings were
+    // read (home state first) and in the listener's own clock.
+    let memory = Arc::new(InMemory::default());
+    let profile = Profile {
+        horses: vec!["Northern Note".into(), "Sample Stayer".into()],
+        home_state: Some("QLD".into()),
+        ..Default::default()
+    };
+    memory.save("local", &profile).await.unwrap();
+    let app = app_with_memory(false, memory).await;
+    let (text, _) = ask_stable(&app, "list_meetings", json!({"date": "2026-10-17"})).await;
+    assert!(
+        text.ends_with("Your horses are running: Northern Note in race 1 at Eagle Farm at 12:10 pm and Sample Stayer in race 8 at Caulfield at 4 pm Queensland time."),
+        "{text}"
+    );
+}
+
+/// A listener with no stable hears exactly what they always heard.
+#[tokio::test]
+async fn answers_without_a_stable_are_unchanged() {
+    let app = app(false).await;
+    let card = json!({"venue": "Caulfield", "race_number": 8, "date": "2026-10-17"});
+    for (tool, args) in [
+        ("get_race_card", card.clone()),
+        ("explain_race", card.clone()),
+        (
+            "race_result",
+            json!({"venue": "Flemington", "race_number": 7, "date": "2026-09-26"}),
+        ),
+    ] {
+        let (text, s) = ask_stable(&app, tool, args).await;
+        assert!(!text.contains("Your horse"), "{tool}: {text}");
+        assert!(
+            text.ends_with("Source: Racing Australia."),
+            "{tool}: {text}"
+        );
+        assert_eq!(s["following"], json!([]), "{tool}");
+    }
+    let (text, s) = ask_stable(&app, "list_meetings", json!({"date": "2026-10-17"})).await;
+    assert!(!text.contains("Your horse"), "{text}");
+    assert_eq!(s["following"], json!([]));
+    let (text, s) = ask_stable(&app, "horse_form", json!({"horse": "Demo Miler"})).await;
+    assert!(!text.contains("following"), "{text}");
+    assert!(text.ends_with("Source: Racing Australia."), "{text}");
+    assert_eq!(s["following"], false);
+}
+
+/// The listener's horses are said after the explanation; the facts a model would reword, and
+/// the explanation the screen shows, never carry them.
+#[tokio::test]
+async fn explanations_keep_the_stable_out_of_the_facts() {
+    let app = app_following(&["Sample Stayer", "Demo Miler"]).await;
+    let card = json!({"venue": "Caulfield", "race_number": 8, "date": "2026-10-17"});
+    let (text, s) = ask_stable(&app, "explain_race", card).await;
+    let explanation = s["explanation"].as_str().unwrap();
+    assert!(
+        text.starts_with(explanation) && text.contains("Your horses"),
+        "{text}"
+    );
+    assert!(!explanation.contains("Your horse"), "{explanation}");
+    let facts = s["facts"].to_string();
+    assert!(!facts.contains("following"), "{facts}");
+    assert!(!facts.contains("Your horse"), "{facts}");
+    assert_eq!(s["written_by"], "template");
+}
