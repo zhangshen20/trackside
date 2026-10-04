@@ -10,6 +10,9 @@
 #                                    also serve the API on that hostname (see "Custom domain"
 #                                    below); set TRACKSIDE_HOSTED_ZONE_ID when its DNS is in
 #                                    Route 53 in this account. Later deploys keep the domain.
+#   HR_ENV=staging deploy/deploy.sh
+#                                    also schedule the daily snapshot refresh from that archive
+#                                    (twice a day; later deploys keep it)
 #   TRACKSIDE_SIM_TODAY=2026-09-27 deploy/deploy.sh
 #                                    the date the simulator treats as today (for a demo on a
 #                                    snapshot of past racing); SIM_MODEL picks its Bedrock model
@@ -55,7 +58,7 @@ if [[ -n "${SNAPSHOT_FROM:-}" ]]; then
 fi
 
 TARGET=aarch64-unknown-linux-gnu
-cargo zigbuild --release -p trackside-mcp -p trackside-sim --target "$TARGET.2.34"
+cargo zigbuild --release -p trackside-mcp -p trackside-sim -p trackside-snapshot --target "$TARGET.2.34"
 # Each Lambda gets a zip holding its binary as `bootstrap`, uploaded under its content hash.
 upload_lambda() {
   local name="$1" dir="target/lambda/$1"
@@ -68,6 +71,7 @@ upload_lambda() {
 }
 CODE_KEY="$(upload_lambda trackside-mcp)"
 SIM_CODE_KEY="$(upload_lambda trackside-sim)"
+REFRESH_CODE_KEY="$(upload_lambda trackside-snapshot)"
 
 # Custom domain: a DNS-validated ACM certificate, requested once and reused. With a Route 53
 # zone the validation record is written here; otherwise it is printed for the DNS provider,
@@ -113,6 +117,7 @@ aws cloudformation deploy --stack-name "$STACK" --template-file deploy/trackside
   --capabilities CAPABILITY_NAMED_IAM --no-fail-on-empty-changeset \
   --tags Project=trackside \
   --parameter-overrides "ArtifactBucket=$BUCKET" "CodeKey=$CODE_KEY" "SimCodeKey=$SIM_CODE_KEY" \
+    "RefreshCodeKey=$REFRESH_CODE_KEY" ${HR_ENV:+"ArchiveEnv=$HR_ENV"} \
     ${TRACKSIDE_SIM_TODAY+"SimToday=$TRACKSIDE_SIM_TODAY"} "SimModel=${SIM_MODEL:-au.anthropic.claude-haiku-4-5-20251001-v1:0}" \
     ${DOMAIN_PARAMS[@]+"${DOMAIN_PARAMS[@]}"}
 
