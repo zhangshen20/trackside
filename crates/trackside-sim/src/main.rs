@@ -181,6 +181,10 @@ async fn session(State(app): State<Shared>, headers: HeaderMap) -> Json<Value> {
         "linking": app.link.is_some(),
         "linked": app.link.is_none() || s.access.is_some() || s.refresh.is_some(),
         "who": s.who,
+        // The day the assistant treats as today, and whether it was pinned for a rehearsal
+        // (TRACKSIDE_SIM_TODAY) rather than read from the clock, so the screen can say so.
+        "today": today_date(&app).format("%Y-%m-%d").to_string(),
+        "simulated_date": app.today.is_some(),
     }))
 }
 
@@ -362,17 +366,20 @@ impl ToolRunner for UserTools<'_> {
 }
 
 fn today(app: &App) -> String {
-    use chrono::NaiveDate;
-    let date = app
-        .today
+    calendar(today_date(app))
+}
+
+/// The date the assistant treats as today: `TRACKSIDE_SIM_TODAY` when set, else today in
+/// Melbourne.
+fn today_date(app: &App) -> chrono::NaiveDate {
+    app.today
         .as_deref()
-        .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+        .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
         .unwrap_or_else(|| {
             Utc::now()
                 .with_timezone(&chrono_tz::Australia::Melbourne)
                 .date_naive()
-        });
-    calendar(date)
+        })
 }
 
 /// Today plus the fortnight around it, so the model maps "last Saturday" or "on Friday" to a

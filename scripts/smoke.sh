@@ -41,6 +41,9 @@ else
   : "${RESULT_DATE:=$DATE}" "${RESULT_VENUE:=$VENUE}" "${RESULT_RACE:=$RACE}"
   : "${PERSON:=Ethan Brown}" "${ROLE:=jockey}"
 fi
+# Perth is always behind the eastern states, so a Western Australian listener hears the race
+# card's start in their own clock on any date and the label can be checked.
+: "${HOME_STATE:=WA}"
 
 PASS=0 FAIL=0
 AUTH=()
@@ -124,6 +127,13 @@ if grep -q '"unfollow_horse"' <<<"$TOOLS"; then
     "$answered and r['result']['structuredContent']['found']"
 fi
 
+# Start times in the listener's own clock (servers since the time-zone change).
+if grep -q '"set_home_state"' <<<"$TOOLS"; then
+  check "set_home_state" "$(call set_home_state "{\"state\":\"$HOME_STATE\"}")" "$answered"
+  check "race card speaks the listener's time" "$(call get_race_card "{\"venue\":\"$VENUE\",\"race_number\":$RACE,\"date\":\"$DATE\"}")" \
+    "$answered and ('Perth time' in text or r['result']['structuredContent']['jump']['venue_state'] == '$HOME_STATE' or not r['result']['structuredContent']['card']['start_local'])"
+fi
+
 # Voice text must read cleanly: no doubled spaces from empty fields, no "A  over".
 check "race card text has no blank fields" "$(call get_race_card "{\"venue\":\"$VENUE\",\"race_number\":$RACE,\"date\":\"$DATE\"}")" \
   '"  " not in text and ", ," not in text'
@@ -142,6 +152,11 @@ check "unknown venue says not found" "$(call get_race_card "{\"venue\":\"Atlanti
   '"result" in r and r["result"]["structuredContent"]["found"] is False'
 check "bad date is rejected" "$(call list_meetings '{"date":"27/09/2026"}')" '"error" in r or r["result"].get("isError")'
 check "unknown method is -32601" "$(rpc '{"jsonrpc":"2.0","id":9,"method":"nope"}')" 'r["error"]["code"] == -32601'
+
+# Leave the smoke subject's profile as it was found: no home state or stable in storage.
+if grep -q '"forget_me"' <<<"$TOOLS"; then
+  check "forget_me clears the smoke subject" "$(call forget_me '{}')" "$answered and r['result']['structuredContent']['forgotten'] is True"
+fi
 
 # OAuth, when the caller brought a token.
 status() { curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "$@"; }

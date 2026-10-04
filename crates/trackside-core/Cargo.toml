@@ -9,6 +9,7 @@ description = "Domain model and data store for Trackside, a racing form guide fo
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
+chrono-tz.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true

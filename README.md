@@ -68,14 +68,14 @@ To serve it on your own hostname, run the script once with `TRACKSIDE_DOMAIN=mcp
 
 | Tool | Answers |
 | --- | --- |
-| `list_meetings` | meetings on a date, track condition, first race |
-| `get_race_card` | one race's conditions and full field (with the MCP App on screens) |
+| `list_meetings` | meetings on a date, track condition, first race (in your own clock when your state keeps a different time) |
+| `get_race_card` | one race's conditions and full field, when it jumps in your clock and the venue's ("4 pm Queensland time, 5 pm at the track, due to jump in about 25 minutes"), with the MCP App on screens |
 | `horse_form` | career and condition records, recent starts with where it was at the 800, last-600 m times, and where it usually settles |
 | `explain_race` | what a race is, why it matters, the strongest recent form and where the field usually settles |
 | `race_result` | placings, margins, time, and how it was run: where the placegetters were at the 800 and their last 600 m |
 | `jockey_or_trainer_stats` | wins and places over a period |
 | `follow_horse` / `unfollow_horse` / `my_stable` | a stable of followed horses, remembered across sessions: what they've done since you last asked, today's engagements and results, and where each horse runs next ("runs on Saturday in the Caulfield Cup, race 8 at Caulfield at 5 pm, barrier 4") |
-| `set_home_state` | read meetings in your state first and in full |
+| `set_home_state` | read meetings in your state first and in full, and hear every start time in your state's clock |
 | `forget_me` | delete everything Trackside remembers about you |
 | `carnival_guide` | the 2026 Spring Racing Carnival feature races |
 

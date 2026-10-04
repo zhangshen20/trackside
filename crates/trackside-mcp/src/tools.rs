@@ -169,10 +169,11 @@ fn relative_day(date: NaiveDate, from: NaiveDate) -> String {
     }
 }
 
-/// One horse's next run as a stable report says it, dated relative to `from`:
+/// One horse's next run as a stable report says it, dated relative to `from`, with the
+/// start already in the listener's words (`at`, none when there is no time yet):
 /// "runs on Saturday in the Caulfield Cup, race 8 at Caulfield at 5 pm, barrier 4, with
 /// J. Example up", or that it has been scratched.
-fn next_run_words(e: &Engagement, from: NaiveDate) -> String {
+fn next_run_words(e: &Engagement, from: NaiveDate, at: Option<String>) -> String {
     let when = relative_day(e.date, from);
     let race = if e.race_name.is_empty() {
         format!("race {} at {}", e.race_number, e.venue)
@@ -187,11 +188,7 @@ fn next_run_words(e: &Engagement, from: NaiveDate) -> String {
     if e.scratched {
         return format!("has been scratched from {race} {when}");
     }
-    let at = if e.start_local.is_empty() {
-        String::new()
-    } else {
-        format!(" at {}", spoken_time(&e.start_local))
-    };
+    let at = at.map(|at| format!(" at {at}")).unwrap_or_default();
     let barrier = e
         .barrier
         .map(|b| format!(", barrier {b}"))
@@ -340,23 +337,86 @@ pub(crate) fn spoken_time(t: &str) -> String {
     }
 }
 
-/// "Flemington in VIC: 10 races, track Good 4, first race 12:35 pm."
-fn meeting_line(m: &Meeting) -> String {
-    let first = m
-        .races
-        .first()
-        .filter(|r| !r.start_local.is_empty())
-        .map(|r| spoken_time(&r.start_local))
-        .unwrap_or_else(|| "time to be confirmed".to_string());
-    format!(
-        "{} in {}: {} race{}, track {}, first race {}.",
-        m.venue,
-        m.state,
-        m.races.len(),
-        if m.races.len() == 1 { "" } else { "s" },
-        m.track_condition.as_deref().unwrap_or("not yet rated"),
-        first
-    )
+/// When a race starts, for one listener: the venue's clock, the listener's own clock when
+/// their home state keeps a different time that day, and how far off the jump is when the
+/// race is today. Built by `Trackside::start`.
+pub(crate) struct Start {
+    /// "5 pm"; `None` when the published start isn't a time yet ("TBA", empty).
+    venue: Option<String>,
+    /// ("4 pm", "Queensland time") when the listener's clock differs from the venue's.
+    home: Option<(String, &'static str)>,
+    /// Minutes from now to the jump, only for a race on the listener's current day.
+    minutes_until: Option<i64>,
+    venue_hhmm: Option<String>,
+    home_hhmm: Option<String>,
+    venue_state: String,
+    home_state: Option<String>,
+}
+
+impl Start {
+    /// "4 pm Queensland time, 5 pm at the track", or just "5 pm"; `None` with no time yet.
+    fn long(&self) -> Option<String> {
+        let venue = self.venue.as_ref()?;
+        Some(match &self.home {
+            Some((home, label)) => format!("{home} {label}, {venue} at the track"),
+            None => venue.clone(),
+        })
+    }
+
+    /// "4 pm Queensland time", or just "5 pm": for lines that are already long.
+    fn short(&self) -> Option<String> {
+        let venue = self.venue.as_ref()?;
+        Some(match &self.home {
+            Some((home, label)) => format!("{home} {label}"),
+            None => venue.clone(),
+        })
+    }
+
+    /// ", due to jump in about 25 minutes", ", which jumped about an hour ago; ask me for
+    /// the result", or nothing when the race isn't within three hours of now.
+    fn relative(&self) -> String {
+        match self.minutes_until {
+            Some(m) if m > 2 && m <= 180 => format!(", due to jump in about {}", about(m)),
+            Some(m) if (-2..=2).contains(&m) => ", jumping about now".to_string(),
+            Some(m) if m >= -180 => {
+                format!(
+                    ", which jumped about {} ago; ask me for the result",
+                    about(m)
+                )
+            }
+            _ => String::new(),
+        }
+    }
+
+    /// The listener's clock time as "HH:MM", for screens, when it differs.
+    fn start_home(&self) -> Option<String> {
+        self.home_hhmm.clone()
+    }
+
+    fn json(&self) -> serde_json::Value {
+        json!({
+            "venue_time": self.venue_hhmm,
+            "venue_state": self.venue_state,
+            "home_state": self.home_state,
+            "home_time": self.home_hhmm,
+            "label": self.home.as_ref().map(|(_, l)| *l),
+            "minutes_until": self.minutes_until,
+        })
+    }
+}
+
+/// A span of minutes the way a person says it: "a few minutes", "25 minutes", "an hour",
+/// "an hour and a half", "2 hours".
+fn about(minutes: i64) -> String {
+    match minutes.abs() {
+        m if m < 3 => "a few minutes".into(),
+        m if m < 58 => format!("{} minutes", ((m + 2) / 5 * 5).max(5)),
+        m if m < 75 => "an hour".into(),
+        m if m < 105 => "an hour and a half".into(),
+        m if m < 135 => "2 hours".into(),
+        m if m < 165 => "2 and a half hours".into(),
+        _ => "3 hours".into(),
+    }
 }
 
 fn fmt_len(m: Option<f64>) -> String {
@@ -401,15 +461,20 @@ impl Trackside {
             meetings.retain(|m| m.state.eq_ignore_ascii_case(state));
         }
         if meetings.is_empty() {
-            return Ok(answer(
-                format!("I don't have any meetings on {} yet. Fields are published two to three days ahead.", date.format("%A %-d %B")),
-                json!({ "date": date, "meetings": [] }),
-            ));
+            let day = date.format("%A %-d %B");
+            let spoken = if date < self.today() {
+                format!("I don't have any meetings on file for {day}.")
+            } else {
+                format!("I don't have any meetings on {day} yet. Fields are published two to three days ahead.")
+            };
+            return Ok(answer(spoken, json!({ "date": date, "meetings": [] })));
         }
-        // A listener with a home state hears its meetings in full and the rest by name.
+        // A listener with a home state hears its meetings in full and the rest by name, and
+        // start times in their own clock when it differs from the venue's.
+        let home_state = self.profile(&ctx).await.home_state;
         let home = match args.state {
             Some(_) => None,
-            None => self.profile(&ctx).await.home_state,
+            None => home_state.clone(),
         };
         let is_home = |m: &&Meeting| {
             home.as_deref()
@@ -421,7 +486,11 @@ impl Trackside {
             0 => (&meetings[..], &meetings[..0]),
             n => meetings.split_at(n),
         };
-        let mut spoken = full.iter().map(meeting_line).collect::<Vec<_>>().join(" ");
+        let mut spoken = full
+            .iter()
+            .map(|m| self.meeting_line(m, home_state.as_deref()))
+            .collect::<Vec<_>>()
+            .join(" ");
         if let (Some(h), 0) = (&home, home_count) {
             spoken = format!("There's no racing in {h}. {spoken}");
         }
@@ -443,9 +512,13 @@ impl Trackside {
                 "According to {SOURCE_RACING_AUSTRALIA}, on {}: {spoken}",
                 date.format("%A %-d %B")
             ),
-            json!({ "date": date, "source": SOURCE_RACING_AUSTRALIA, "home_state": home, "meetings": meetings.iter().map(|m| json!({
+            json!({ "date": date, "source": SOURCE_RACING_AUSTRALIA, "home_state": home_state, "meetings": meetings.iter().map(|m| json!({
                 "venue": m.venue, "state": m.state, "track_condition": m.track_condition, "rail": m.rail,
-                "races": m.races.iter().map(|r| json!({"race_number": r.race_number, "name": r.name, "start_local": r.start_local, "distance_m": r.distance_m, "grade": r.grade})).collect::<Vec<_>>()
+                "races": m.races.iter().map(|r| json!({
+                    "race_number": r.race_number, "name": r.name, "start_local": r.start_local,
+                    "start_home": self.start(m.date, &r.start_local, &m.state, home_state.as_deref()).start_home(),
+                    "distance_m": r.distance_m, "grade": r.grade,
+                })).collect::<Vec<_>>()
             })).collect::<Vec<_>>() }),
         ))
     }
@@ -459,6 +532,7 @@ impl Trackside {
     )]
     async fn get_race_card(
         &self,
+        ctx: RequestContext<RoleServer>,
         Parameters(mut args): Parameters<RaceArgs>,
     ) -> Result<CallToolResult, McpError> {
         let date = parse_date(&args.date, self.today())?;
@@ -483,10 +557,22 @@ impl Trackside {
             .filter(|r| r.scratched)
             .map(|r| r.horse.clone())
             .collect();
-        let jump = if card.start_local.is_empty() {
-            String::new()
-        } else {
-            format!(", jumping at {}", spoken_time(&card.start_local))
+        // The jump in the listener's own clock when their state keeps a different time.
+        let venue_state = self
+            .store
+            .meetings(date)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .find(|m| venue_matches(&m.venue, &args.venue))
+            .map(|m| m.state)
+            .unwrap_or_default();
+        let home = self.profile(&ctx).await.home_state;
+        let start = self.start(date, &card.start_local, &venue_state, home.as_deref());
+        let jump = match start.long() {
+            Some(at) => format!(", jumping at {at}{}", start.relative()),
+            None if card.start_local.trim().is_empty() => String::new(),
+            None => ", start time to be confirmed".to_string(),
         };
         let mut spoken = format!(
             "Race {} at {} is {}. {} runners{jump}.",
@@ -528,7 +614,7 @@ impl Trackside {
             .collect();
         Ok(answer(
             spoken,
-            json!({ "found": true, "date": date, "venue": args.venue, "source": SOURCE_RACING_AUSTRALIA, "card": card, "run_styles": styles }),
+            json!({ "found": true, "date": date, "venue": args.venue, "source": SOURCE_RACING_AUSTRALIA, "card": card, "jump": start.json(), "run_styles": styles }),
         ))
     }
 
@@ -954,14 +1040,30 @@ impl Trackside {
             .map_err(internal)?
             .into_iter()
             .next();
-        let coming = match &next {
-            Some(e) if e.scratched => format!(" {name} {}.", next_run_words(e, today)),
-            Some(e) => format!(
-                " {name} {}; ask me after the race and I'll tell you how it went.",
-                next_run_words(e, today)
+        let start = next.as_ref().map(|e| {
+            self.start(
+                e.date,
+                &e.start_local,
+                &e.state,
+                profile.home_state.as_deref(),
+            )
+        });
+        let coming = match (&next, &start) {
+            (Some(e), Some(s)) if e.scratched => {
+                format!(" {name} {}.", next_run_words(e, today, s.short()))
+            }
+            (Some(e), Some(s)) => format!(
+                " {name} {}{}; ask me after the race and I'll tell you how it went.",
+                next_run_words(e, today, s.short()),
+                s.relative()
             ),
-            None => String::new(),
+            _ => String::new(),
         };
+        let next = next.map(|e| {
+            let mut v = json!(e);
+            v["start_home"] = json!(start.as_ref().and_then(Start::start_home));
+            v
+        });
         Ok(answer(
             format!(
                 "{}Following {name}. You now follow {n} horse{}.{remember}{coming}",
@@ -1032,6 +1134,8 @@ impl Trackside {
         let user = caller_key(&ctx);
         let mut profile = self.memory.load(&user).await.map_err(internal)?;
         let stable = profile.horses.clone();
+        let home_state = profile.home_state.clone();
+        let home = home_state.as_deref();
         if stable.is_empty() {
             return Ok(answer(
                 "You aren't following any horses yet. Say 'follow' and a horse's name to start."
@@ -1054,7 +1158,7 @@ impl Trackside {
         }
         let mut lines = Vec::new();
         let mut engagements = Vec::new();
-        let mut upcoming = Vec::new();
+        let mut upcoming: Vec<serde_json::Value> = Vec::new();
         // What happened between the last report and this day, from each horse's form. Nothing
         // to catch up on until a day has passed since the last report.
         let heard_up_to = date.min(today);
@@ -1140,20 +1244,25 @@ impl Trackside {
                             engagements.push(json!({ "horse": horse, "venue": m.venue, "race_number": r.race_number, "start_local": r.start_local, "scratched": true }));
                             continue;
                         }
+                        let start = self.start(date, &r.start_local, &m.state, home);
                         lines.push(format!(
-                            "{} runs in race {} at {}{} at {}, barrier {}, {} up",
+                            "{} runs in race {} at {}{}{}, barrier {}, {} up{}",
                             horse,
                             r.race_number,
                             m.venue,
                             in_brackets(&r.name),
-                            spoken_time(&r.start_local),
+                            start
+                                .short()
+                                .map(|at| format!(" at {at}"))
+                                .unwrap_or_default(),
                             runner
                                 .barrier
                                 .map(|b| b.to_string())
                                 .unwrap_or_else(|| "TBA".into()),
-                            runner.jockey
+                            runner.jockey,
+                            start.relative()
                         ));
-                        engagements.push(json!({ "horse": horse, "venue": m.venue, "race_number": r.race_number, "start_local": r.start_local }));
+                        engagements.push(json!({ "horse": horse, "venue": m.venue, "race_number": r.race_number, "start_local": r.start_local, "start_home": start.start_home() }));
                     }
                 }
             }
@@ -1162,10 +1271,16 @@ impl Trackside {
             }
             // Not engaged that day: its next run, when the fields hold one.
             if let Some(mut e) = engagements_in(&ahead, horse).into_iter().next() {
-                lines.push(format!("{horse} {}", next_run_words(&e, date)));
+                let start = self.start(e.date, &e.start_local, &e.state, home);
+                lines.push(format!(
+                    "{horse} {}",
+                    next_run_words(&e, date, start.short())
+                ));
                 // Named as the listener's stable names it, so a screen can match the two.
                 e.horse = horse.clone();
-                upcoming.push(e);
+                let mut v = json!(e);
+                v["start_home"] = json!(start.start_home());
+                upcoming.push(v);
                 continue;
             }
             // Horses already covered by the catch-up don't need their last start again.
@@ -1380,6 +1495,61 @@ impl Trackside {
             out.push((r.number, r.horse.clone(), style));
         }
         out
+    }
+
+    /// When a race on `date` at a venue in `venue_state` starts, for a listener whose home
+    /// state is `home` (none, or the venue's own, means the venue's clock alone).
+    fn start(
+        &self,
+        date: NaiveDate,
+        start_local: &str,
+        venue_state: &str,
+        home: Option<&str>,
+    ) -> Start {
+        let venue_time = trackside_core::parse_start_local(start_local);
+        let venue = venue_time.map(|_| spoken_time(start_local));
+        let home_state = home
+            .map(|h| h.trim().to_ascii_uppercase())
+            .filter(|h| !h.is_empty());
+        let home = home_state.as_deref().and_then(|h| {
+            let (at, differs) = trackside_core::in_home_zone(date, start_local, venue_state, h)?;
+            let label = trackside_core::zone_label(h)?;
+            differs.then_some((at, label))
+        });
+        let minutes_until = (date == self.today())
+            .then(|| trackside_core::start_instant(date, start_local, venue_state))
+            .flatten()
+            .map(|at| (at - self.clock.now()).num_minutes());
+        Start {
+            venue,
+            home: home
+                .as_ref()
+                .map(|(at, label)| (spoken_time(&at.format("%H:%M").to_string()), *label)),
+            minutes_until,
+            venue_hhmm: venue_time.map(|t| t.format("%H:%M").to_string()),
+            home_hhmm: home.as_ref().map(|(at, _)| at.format("%H:%M").to_string()),
+            venue_state: venue_state.to_string(),
+            home_state,
+        }
+    }
+
+    /// "Flemington in VIC: 10 races, track Good 4, first race 12:35 pm." A listener in
+    /// another state hears the first race in their own clock as well.
+    fn meeting_line(&self, m: &Meeting, home: Option<&str>) -> String {
+        let first = m
+            .races
+            .first()
+            .and_then(|r| self.start(m.date, &r.start_local, &m.state, home).long())
+            .unwrap_or_else(|| "time to be confirmed".to_string());
+        format!(
+            "{} in {}: {} race{}, track {}, first race {}.",
+            m.venue,
+            m.state,
+            m.races.len(),
+            if m.races.len() == 1 { "" } else { "s" },
+            m.track_condition.as_deref().unwrap_or("not yet rated"),
+            first
+        )
     }
 
     /// The caller's remembered profile; an empty one when memory can't be read, so a storage
