@@ -47,6 +47,7 @@
   .idle { display: grid; place-items: center; text-align: center; min-height: 390px; }
   .clock { font-size: 64px; font-weight: 300; letter-spacing: 1px; }
   .idle p { color: var(--muted); margin: 6px 0 18px; }
+  .simdate { color: var(--muted); font-size: 15px; margin-top: 2px; }
   .chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
   .chip { border: 1px solid var(--line); background: var(--panel); padding: 7px 14px; border-radius: 999px; cursor: pointer; font-size: 14px; }
   .chip:hover { border-color: var(--accent); }
@@ -165,6 +166,7 @@
 
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const setState = (s) => { device.dataset.state = s; };
+  const fmtLong = (d) => { try { return new Date(d + "T00:00:00").toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" }); } catch { return d; } };
   const fmtDate = (d) => { try { return new Date(d + "T00:00:00").toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" }); } catch { return d; } };
   const rec = (r) => r ? `${r.wins}-${r.seconds}-${r.thirds} from ${r.starts}` : "";
 
@@ -172,6 +174,7 @@
     const now = new Date();
     screen.innerHTML = `<div class="idle"><div>
       <div class="clock">${now.toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit" })}</div>
+      ${session.simulated_date && session.today ? `<div class="simdate">${esc(fmtLong(session.today))} (simulated)</div>` : ""}
       <p>Try asking</p>
       <div class="chips">${SUGGESTIONS.slice(0, 6).map((s) => `<button class="chip">${esc(s)}</button>`).join("")}</div>
     </div></div>`;
@@ -183,7 +186,7 @@
     get_race_card(s) {
       const c = s.card || s; if (!c.runners) return null;
       return `<h2>Race ${esc(c.race_number)}: ${esc(c.name)}</h2>
-        <div class="sub">${[c.grade || c.class, c.distance_m && c.distance_m + " m", c.start_local && "Jumps " + c.start_local].filter(Boolean).map(esc).join(" · ")}</div>
+        <div class="sub">${[c.grade || c.class, c.distance_m && c.distance_m + " m", c.start_local && "Jumps " + c.start_local + (s.jump && s.jump.home_time ? " (" + s.jump.home_time + " " + (s.jump.home_state || "your time") + ")" : "")].filter(Boolean).map(esc).join(" · ")}</div>
         <table><thead><tr><th>No.</th><th>Horse</th><th class="num">Bar.</th><th class="num">Wt</th><th>Jockey</th><th>Trainer</th><th>Form</th></tr></thead><tbody>
         ${c.runners.map((r) => `<tr class="${r.scratched ? "scratched" : ""}"><td>${esc(r.number)}</td><td>${esc(r.horse)}</td><td class="num">${esc(r.barrier)}</td><td class="num">${esc(r.weight_kg)}</td><td>${esc(r.jockey)}</td><td>${esc(r.trainer)}</td><td>${esc(r.last10)}</td></tr>`).join("")}
         </tbody></table>`;
@@ -213,7 +216,7 @@
       if (!s.meetings) return null;
       return `<h2>Meetings, ${esc(fmtDate(s.date))}</h2><div class="list">
         ${s.meetings.map((m) => `<div class="item"><div class="t">${esc(m.venue)} <span class="pill">${esc(m.state)}</span></div>
-          <div class="m">${[m.track_condition, m.weather, m.races && m.races.length + " races", m.races && m.races[0] && "first " + m.races[0].start_local].filter(Boolean).map(esc).join(" · ")}</div></div>`).join("") || '<div class="muted">No meetings.</div>'}
+          <div class="m">${[m.track_condition, m.weather, m.races && m.races.length + " races", m.races && m.races[0] && "first " + m.races[0].start_local + (m.races[0].start_home ? " (" + m.races[0].start_home + " your time)" : "")].filter(Boolean).map(esc).join(" · ")}</div></div>`).join("") || '<div class="muted">No meetings.</div>'}
       </div>`;
     },
     explain_race(s) {
@@ -233,13 +236,13 @@
       const caught = s.catch_up || [];
       const up = s.upcoming || [];
       const next = (h) => { const u = up.find((x) => x.horse === h); if (!u) return s.date ? "Not engaged " + esc(fmtDate(s.date)) : "Following";
-        return `${u.scratched ? "Scratched from" : "Next run:"} ${esc(u.venue)} race ${esc(u.race_number)}, ${esc(fmtDate(u.date))}${u.start_local && !u.scratched ? " at " + esc(u.start_local) : ""}${u.race_name ? " · " + esc(u.race_name) : ""}`; };
+        return `${u.scratched ? "Scratched from" : "Next run:"} ${esc(u.venue)} race ${esc(u.race_number)}, ${esc(fmtDate(u.date))}${u.start_local && !u.scratched ? " at " + esc(u.start_local) + (u.start_home ? " (" + esc(u.start_home) + " your time)" : "") : ""}${u.race_name ? " · " + esc(u.race_name) : ""}`; };
       const since = s.since ? `<div class="sub">Since you last checked, ${esc(fmtDate(s.since))}</div><div class="list">
         ${caught.map((c) => `<div class="item"><div class="t">${esc(c.horse)} ${c.finish === 1 ? '<span class="badge win">Won</span>' : c.finish ? `<span class="pill">${esc(c.finish)}${c.starters ? " of " + esc(c.starters) : ""}</span>` : ""}</div><div class="m">${[fmtDate(c.date), c.venue, c.distance_m && c.distance_m + " m", c.condition].filter(Boolean).map(esc).join(" · ")}</div></div>`).join("") || '<div class="muted">None of your horses have raced since.</div>'}
       </div>` : "";
       return `<h2>My stable</h2><div class="sub">${esc(s.stable.length)} horse${s.stable.length === 1 ? "" : "s"} followed${s.remembered ? " · remembered across sessions" : ""}</div>${since}<div class="list">
         ${s.stable.map((h) => { const e = eng.filter((x) => x.horse === h);
-          return `<div class="item"><div class="t">${esc(h)}</div><div class="m">${e.length ? e.map((x) => `${esc(x.venue)} race ${esc(x.race_number)}${x.start_local ? " at " + esc(x.start_local) : ""}${x.scratched ? " · scratched" : ""}${x.finished ? ` · finished ${x.finished === 1 ? '<span class="badge win">1st</span>' : esc(x.finished)}` : ""}`).join("; ") : next(h)}</div></div>`; }).join("") || '<div class="muted">No horses yet. Say "follow" and a horse\'s name.</div>'}
+          return `<div class="item"><div class="t">${esc(h)}</div><div class="m">${e.length ? e.map((x) => `${esc(x.venue)} race ${esc(x.race_number)}${x.start_local ? " at " + esc(x.start_local) + (x.start_home ? " (" + esc(x.start_home) + " your time)" : "") : ""}${x.scratched ? " · scratched" : ""}${x.finished ? ` · finished ${x.finished === 1 ? '<span class="badge win">1st</span>' : esc(x.finished)}` : ""}`).join("; ") : next(h)}</div></div>`; }).join("") || '<div class="muted">No horses yet. Say "follow" and a horse\'s name.</div>'}
       </div>`;
     },
     follow_horse(s) { return s.stable ? cards.my_stable({ stable: s.stable, date: "", remembered: s.remembered, upcoming: s.next ? [s.next] : [] }) : null; },

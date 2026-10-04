@@ -54,7 +54,12 @@ async fn app(with_auth: bool) -> axum::Router {
 }
 
 async fn app_with_memory(with_auth: bool, memory: Arc<dyn Memory>) -> axum::Router {
-    app_with(with_auth, Arc::new(demo_store()), memory).await
+    app_at(with_auth, memory, TEST_NOW).await
+}
+
+/// The app on the demo fixture with its clock stopped at `now` (RFC 3339, UTC).
+async fn app_at(with_auth: bool, memory: Arc<dyn Memory>, now: &str) -> axum::Router {
+    app_with(with_auth, Arc::new(demo_store()), memory, now).await
 }
 
 /// The demo fixture the server runs on locally.
@@ -92,6 +97,7 @@ async fn app_with(
     with_auth: bool,
     store: Arc<FixtureStore>,
     memory: Arc<dyn Memory>,
+    now: &str,
 ) -> axum::Router {
     let auth = if with_auth {
         let auth = Arc::new(Auth::new(
@@ -107,7 +113,7 @@ async fn app_with(
     } else {
         None
     };
-    let clock = Arc::new(FixedClock(TEST_NOW.parse().unwrap()));
+    let clock = Arc::new(FixedClock(now.parse().unwrap()));
     // As on Lambda: stateless, and no localhost-only Host check.
     build_app(
         store,
@@ -543,6 +549,7 @@ async fn a_venue_word_two_meetings_answer_to_is_asked_about() {
         false,
         Arc::new(two_warwicks()),
         Arc::new(InMemory::default()),
+        TEST_NOW,
     )
     .await;
     let (_, _, v) = send(
@@ -591,6 +598,7 @@ async fn explanations_leave_out_form_nobody_has() {
         false,
         Arc::new(two_warwicks()),
         Arc::new(InMemory::default()),
+        TEST_NOW,
     )
     .await;
     let (_, _, v) = send(
@@ -703,6 +711,184 @@ async fn the_stable_looks_ahead_to_each_horses_next_run() {
     assert!(
         text.contains("Spare Part isn't engaged on 17 Oct or in any field through 21 Oct"),
         "{text}"
+    );
+}
+
+/// A 5 pm Caulfield race on Cup day is 4 pm in Brisbane, 2 pm in Perth and 4:30 pm in
+/// Adelaide once daylight saving has started; Sydney keeps Melbourne's clock.
+#[tokio::test]
+async fn listeners_hear_start_times_in_their_own_clock() {
+    let app = app(false).await;
+    let card = || {
+        call(
+            "get_race_card",
+            json!({"venue": "Caulfield", "race_number": 8, "date": "2026-10-17"}),
+        )
+    };
+    let home = |state: &str| call("set_home_state", json!({"state": state}));
+    let (_, _, v) = send(&app, "POST", "/mcp", None, Some(card())).await;
+    assert!(
+        spoken(&v).contains("3 runners, jumping at 5 pm."),
+        "{}",
+        spoken(&v)
+    );
+    assert!(v["result"]["structuredContent"]["jump"]["home_time"].is_null());
+    for (state, words, hhmm) in [
+        ("QLD", "4 pm Queensland time, 5 pm at the track", "16:00"),
+        ("WA", "2 pm Perth time, 5 pm at the track", "14:00"),
+        ("SA", "4:30 pm Adelaide time, 5 pm at the track", "16:30"),
+    ] {
+        send(&app, "POST", "/mcp", None, Some(home(state))).await;
+        let (_, _, v) = send(&app, "POST", "/mcp", None, Some(card())).await;
+        let text = spoken(&v);
+        assert!(
+            text.contains(&format!("jumping at {words}.")),
+            "{state}: {text}"
+        );
+        assert_eq!(v["result"]["structuredContent"]["jump"]["home_time"], hhmm);
+        assert_eq!(
+            v["result"]["structuredContent"]["jump"]["venue_time"],
+            "17:00"
+        );
+    }
+    send(&app, "POST", "/mcp", None, Some(home("NSW"))).await;
+    let (_, _, v) = send(&app, "POST", "/mcp", None, Some(card())).await;
+    assert!(spoken(&v).contains("jumping at 5 pm."), "{}", spoken(&v));
+    assert!(v["result"]["structuredContent"]["jump"]["home_time"].is_null());
+
+    // Meetings and the stable follow suit for a Queensland listener.
+    send(&app, "POST", "/mcp", None, Some(home("QLD"))).await;
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("list_meetings", json!({"date": "2026-10-17"}))),
+    )
+    .await;
+    let text = spoken(&v);
+    assert!(
+        text.contains("Eagle Farm in QLD: 1 race, track Good 4, first race 12:10 pm.")
+            && text.contains("Elsewhere: Caulfield."),
+        "{text}"
+    );
+    let meetings = &v["result"]["structuredContent"]["meetings"];
+    let caulfield = meetings
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["venue"] == "Caulfield")
+        .unwrap();
+    assert_eq!(caulfield["races"][0]["start_home"], "16:00");
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("follow_horse", json!({"horse": "Sample Stayer"}))),
+    )
+    .await;
+    let text = spoken(&v);
+    assert!(
+        text.contains("race 8 at Caulfield at 4 pm Queensland time, barrier 4"),
+        "{text}"
+    );
+    assert_eq!(
+        v["result"]["structuredContent"]["next"]["start_home"],
+        "16:00"
+    );
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("my_stable", json!({}))),
+    )
+    .await;
+    let text = spoken(&v);
+    assert!(
+        text.contains("at 4 pm Queensland time, barrier 4"),
+        "{text}"
+    );
+    assert_eq!(
+        v["result"]["structuredContent"]["upcoming"][0]["start_home"],
+        "16:00"
+    );
+}
+
+/// On the day, a race within three hours is placed against the clock.
+#[tokio::test]
+async fn todays_race_says_how_far_off_the_jump_is() {
+    let card = || {
+        call(
+            "get_race_card",
+            json!({"venue": "Caulfield", "race_number": 8, "date": "2026-10-17"}),
+        )
+    };
+    // 3:35 pm in Brisbane on Cup day: the 5 pm Caulfield race is 25 minutes away.
+    let router = app_at(false, Arc::new(InMemory::default()), "2026-10-17T05:35:00Z").await;
+    send(
+        &router,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("set_home_state", json!({"state": "QLD"}))),
+    )
+    .await;
+    let (_, _, v) = send(&router, "POST", "/mcp", None, Some(card())).await;
+    let text = spoken(&v);
+    assert!(
+        text.contains(
+            "jumping at 4 pm Queensland time, 5 pm at the track, due to jump in about 25 minutes."
+        ),
+        "{text}"
+    );
+    assert_eq!(
+        v["result"]["structuredContent"]["jump"]["minutes_until"],
+        25
+    );
+    // An hour after the jump.
+    let router = app_at(false, Arc::new(InMemory::default()), "2026-10-17T07:00:00Z").await;
+    let (_, _, v) = send(&router, "POST", "/mcp", None, Some(card())).await;
+    let text = spoken(&v);
+    assert!(
+        text.contains("jumping at 5 pm, which jumped about an hour ago; ask me for the result."),
+        "{text}"
+    );
+    // The day before, nothing is said about the clock.
+    let router = app(false).await;
+    let (_, _, v) = send(&router, "POST", "/mcp", None, Some(card())).await;
+    assert!(spoken(&v).contains("jumping at 5 pm."), "{}", spoken(&v));
+}
+
+#[tokio::test]
+async fn an_empty_past_day_is_not_said_to_be_pending() {
+    let app = app(false).await;
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("list_meetings", json!({"date": "2026-10-05"}))),
+    )
+    .await;
+    assert!(
+        spoken(&v).starts_with("I don't have any meetings on file for Monday 5 October."),
+        "{}",
+        spoken(&v)
+    );
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("list_meetings", json!({"date": "2026-10-20"}))),
+    )
+    .await;
+    assert!(
+        spoken(&v).starts_with("I don't have any meetings on Tuesday 20 October yet."),
+        "{}",
+        spoken(&v)
     );
 }
 
