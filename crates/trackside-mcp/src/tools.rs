@@ -378,7 +378,7 @@ impl Start {
         match self.minutes_until {
             Some(m) if m > 2 && m <= 180 => format!(", due to jump in about {}", about(m)),
             Some(m) if (-2..=2).contains(&m) => ", jumping about now".to_string(),
-            Some(m) if m >= -180 => {
+            Some(m) if (-180..-2).contains(&m) => {
                 format!(
                     ", which jumped about {} ago; ask me for the result",
                     about(m)

@@ -855,6 +855,10 @@ async fn todays_race_says_how_far_off_the_jump_is() {
         text.contains("jumping at 5 pm, which jumped about an hour ago; ask me for the result."),
         "{text}"
     );
+    // Earlier the same day, more than three hours out, nothing is said about the clock.
+    let router = app_at(false, Arc::new(InMemory::default()), "2026-10-16T22:00:00Z").await;
+    let (_, _, v) = send(&router, "POST", "/mcp", None, Some(card())).await;
+    assert!(spoken(&v).contains("jumping at 5 pm."), "{}", spoken(&v));
     // The day before, nothing is said about the clock.
     let router = app(false).await;
     let (_, _, v) = send(&router, "POST", "/mcp", None, Some(card())).await;
