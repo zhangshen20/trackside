@@ -387,7 +387,7 @@ async fn missing_result_says_when_there_was_no_meeting() {
     .await;
     let text = spoken(&out);
     assert!(
-        text.starts_with("There was no meeting at Flemington on Saturday 17 October."),
+        text.starts_with("There was no racing at Flemington on Saturday 17 October."),
         "{text}"
     );
     assert!(text.contains("Caulfield"), "{text}");
