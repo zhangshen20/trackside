@@ -76,6 +76,8 @@ To serve it on your own hostname, run the script once with `TRACKSIDE_DOMAIN=mcp
 | `forget_me` | delete everything Trackside remembers about you |
 | `carnival_guide` | the 2026 Spring Racing Carnival feature races |
 
+Every tool carries a title and the MCP behaviour hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), so a host knows that `forget_me` and `unfollow_horse` delete and that the rest only read. Input schemas use only what every model provider reads (plain types, no nullable type arrays, formats or bounds), which is what MCP Inspector's schema portability check looks for.
+
 ## MCP App: the race card on screen
 
 On a device with a screen, Trackside draws its own answers. The server ships an MCP App (the MCP Apps extension, `io.modelcontextprotocol/ui`): `get_race_card`, `race_result`, `horse_form`, `explain_race` and `my_stable` name the resource `ui://trackside/race-card.html` in their `_meta`, and a host that supports MCP Apps shows it in a sandboxed iframe next to the spoken answer.

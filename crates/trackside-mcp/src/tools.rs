@@ -91,6 +91,36 @@ pub struct PersonArgs {
 /// Trackside's MCP App (the MCP Apps extension): one view that draws race cards, results,
 /// form, explanations and a stable from a tool's structured content, and calls the tools back
 /// through the host when a listener taps a horse.
+/// A tool's input schema with only what every host's model reads: no `$schema` line, no
+/// nullable type arrays (an optional field is simply not required) and no integer formats or
+/// bounds. MCP Inspector flags each of those as not portable across model providers.
+fn portable<T: schemars::JsonSchema + std::any::Any>() -> Arc<rmcp::model::JsonObject> {
+    let mut schema = rmcp::handler::server::common::schema_for_input::<T>()
+        .unwrap_or_else(|e| panic!("input schema for {}: {e}", std::any::type_name::<T>()))
+        .as_ref()
+        .clone();
+    schema.remove("$schema");
+    if let Some(fields) = schema
+        .get_mut("properties")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for field in fields
+            .values_mut()
+            .filter_map(serde_json::Value::as_object_mut)
+        {
+            if let Some(serde_json::Value::Array(types)) = field.get("type") {
+                let kept: Vec<_> = types.iter().filter(|t| *t != "null").cloned().collect();
+                if let [one] = kept.as_slice() {
+                    field.insert("type".into(), one.clone());
+                }
+            }
+            field.remove("format");
+            field.remove("minimum");
+        }
+    }
+    Arc::new(schema)
+}
+
 pub const APP_URI: &str = "ui://trackside/race-card.html";
 pub const APP_MIME: &str = "text/html;profile=mcp-app";
 const APP_HTML: &str = include_str!("../static/race-card.html");
@@ -242,6 +272,9 @@ impl Trackside {
     }
 
     #[tool(
+        title = "Race meetings",
+        annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false),
+        input_schema = portable::<DateArgs>(),
         description = "List the Australian thoroughbred race meetings on a date, with track condition and the first race time. Use for questions like 'what racing is on today' or 'is there racing at Flemington on Saturday'."
     )]
     async fn list_meetings(
@@ -305,6 +338,9 @@ impl Trackside {
     }
 
     #[tool(
+        title = "Race card",
+        annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false),
+        input_schema = portable::<RaceArgs>(),
         meta = app_meta(),
         description = "The race card for one race: name, distance, class, prize and the full field with barriers, jockeys, trainers and weights. Use for 'who is running in race 8 at Caulfield'."
     )]
@@ -377,6 +413,9 @@ impl Trackside {
     }
 
     #[tool(
+        title = "Horse form",
+        annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false),
+        input_schema = portable::<HorseArgs>(),
         meta = app_meta(),
         description = "A horse's form: career record, first-up and track-condition records, and its recent starts with margins and last-600m times. Use for 'how has Sample Stayer been going' or 'has it won on a soft track'."
     )]
@@ -484,6 +523,9 @@ impl Trackside {
     }
 
     #[tool(
+        title = "Explain a race",
+        annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false),
+        input_schema = portable::<RaceArgs>(),
         meta = app_meta(),
         description = "Explain a race in plain language for a newcomer: what it is, why it matters and which runners bring the strongest form. No betting or prices. Use for 'tell me about the Caulfield Cup' or 'explain race 8'. Given only a race's name, find its venue, date and race number with list_meetings first."
     )]
@@ -575,6 +617,9 @@ impl Trackside {
     }
 
     #[tool(
+        title = "Race result",
+        annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false),
+        input_schema = portable::<RaceArgs>(),
         meta = app_meta(),
         description = "The result of a race: placings, margins, winning time and the fastest last 600 metres from sectional timing. Use for 'who won race 7 at Flemington' or 'who ran the fastest last 600'."
     )]
@@ -655,6 +700,9 @@ impl Trackside {
     }
 
     #[tool(
+        title = "Jockey or trainer record",
+        annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false),
+        input_schema = portable::<PersonArgs>(),
         description = "Wins and places for a jockey or trainer over a period, counted from official results. Use for 'how is Jamie Kah going this spring'."
     )]
     async fn jockey_or_trainer_stats(
@@ -721,6 +769,9 @@ impl Trackside {
     }
 
     #[tool(
+        title = "Follow a horse",
+        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false),
+        input_schema = portable::<HorseArgs>(),
         description = "Follow a horse. Trackside remembers the horses each listener follows across sessions and reports when they are in a field or have run. Use for 'follow Sample Stayer' or 'add it to my stable'."
     )]
     async fn follow_horse(
@@ -767,6 +818,9 @@ impl Trackside {
     }
 
     #[tool(
+        title = "Unfollow a horse",
+        annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = true, open_world_hint = false),
+        input_schema = portable::<HorseArgs>(),
         description = "Stop following a horse. Use for 'unfollow Sample Stayer' or 'take it out of my stable'."
     )]
     async fn unfollow_horse(
@@ -808,6 +862,9 @@ impl Trackside {
     }
 
     #[tool(
+        title = "My stable",
+        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = false),
+        input_schema = portable::<DateArgs>(),
         meta = app_meta(),
         description = "The horses the user follows and what's new for them: how they have run since the user last asked (remembered across sessions), today's engagements and results. Use for 'what's happening with my stable', 'any of my horses running today' or 'how did my horses go'."
     )]
@@ -956,6 +1013,9 @@ impl Trackside {
     }
 
     #[tool(
+        title = "Home state",
+        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false),
+        input_schema = portable::<StateArgs>(),
         description = "Remember the listener's home state, so meetings there are read out first and in full. Use for 'I'm in Sydney', 'I follow Queensland racing' or 'set my state to VIC'."
     )]
     async fn set_home_state(
@@ -981,6 +1041,13 @@ impl Trackside {
     }
 
     #[tool(
+        title = "Forget me",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
         description = "Forget everything Trackside remembers about the listener: followed horses, home state and when they last checked. Use for 'forget me' or 'delete my data'."
     )]
     async fn forget_me(&self, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
@@ -995,6 +1062,13 @@ impl Trackside {
     }
 
     #[tool(
+        title = "Spring Carnival guide",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        ),
         description = "The Spring Racing Carnival guide: the feature races, their dates, venues and what makes each one matter. Use for 'when is the Melbourne Cup' or 'what's on this carnival'."
     )]
     async fn carnival_guide(&self) -> Result<CallToolResult, McpError> {
