@@ -78,7 +78,7 @@ To serve it on your own hostname, run the script once with `TRACKSIDE_DOMAIN=mcp
 | `next_race` | the next race to jump, anywhere or in one state or at one venue, how far off it is and its start in your clock ("race 8 at Caulfield, due to jump in about 25 minutes, at 4 pm Queensland time, 5 pm at the track"), with racing in your home state first; after the last race, tomorrow's first |
 | `set_home_state` | read meetings in your state first and in full, and hear every start time in your state's clock |
 | `forget_me` | delete everything Trackside remembers about you |
-| `carnival_guide` | the 2026 Spring Racing Carnival feature races |
+| `carnival_guide` | the 2026 Spring Racing Carnival as it stands on the day: what is next (with its field and jump time once out), the latest feature result, and what follows; or one feature by name ("when's the Cox Plate") |
 
 Every tool carries a title and the MCP behaviour hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), so a host knows that `forget_me` and `unfollow_horse` delete, that `follow_horse`, `my_stable` and `set_home_state` write the listener's profile, and that the other eight only read. Input schemas use only what every model provider reads (plain types, no nullable type arrays, formats or bounds), which is what MCP Inspector's schema portability check looks for.
 

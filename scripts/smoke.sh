@@ -113,6 +113,16 @@ check "race_result"     "$(call race_result "{\"venue\":\"$RESULT_VENUE\",\"race
 check "horse_form"      "$(call horse_form "{\"horse\":\"$HORSE\"}")" "$answered and r['result']['structuredContent'].get('form')"
 check "jockey_or_trainer_stats" "$(call jockey_or_trainer_stats "{\"name\":\"$PERSON\",\"role\":\"$ROLE\"}")" "$answered and r['result']['structuredContent']['found']"
 check "carnival_guide"  "$(call carnival_guide '{}')" "$answered and len(r['result']['structuredContent']['races']) >= 5"
+# Carnival today (servers since the carnival-today change): each feature says where it stands,
+# and the guide fits one breath. In the fixture, a race by name answers about that race alone.
+if grep -q 'as it stands today' <<<"$TOOLS"; then
+  check "carnival_guide knows what day it is" "$(call carnival_guide '{}')" \
+    "$answered and all(x.get('status') in ('run','today','ahead','fields_not_out') for x in r['result']['structuredContent']['races']) and '  ' not in text and len(text.split()) <= 90"
+  if [[ -n "$FIXTURE" ]]; then
+    check "carnival_guide answers about one race" "$(call carnival_guide '{"race":"Caulfield Cup"}')" \
+      "$answered and r['result']['structuredContent']['race']['name'] == 'Caulfield Cup' and len(r['result']['structuredContent']['races']) == 1 and text.startswith('The Caulfield Cup ')"
+  fi
+fi
 check "follow_horse"    "$(call follow_horse "{\"horse\":\"$HORSE\"}")" "$answered"
 check "my_stable"       "$(call my_stable "{\"date\":\"$DATE\"}")" "$answered"
 # The stable looks ahead (fixture only; the server must run with TRACKSIDE_TODAY=2026-10-14, the

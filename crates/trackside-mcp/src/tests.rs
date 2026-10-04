@@ -1859,3 +1859,260 @@ async fn next_race_near_you_comes_first() {
     let (_, s) = next_race_at(&router, json!({"state": "VIC"})).await;
     assert_eq!(s["next"]["venue"], "Caulfield");
 }
+
+// ---- carnival-today ----
+
+/// A carnival in progress: the Caulfield Cup run with its result on file, the Cox Plate's
+/// field out, and a Melbourne Cup result whose card names no race (found by venue, distance
+/// and grade). Nothing for the other features.
+fn carnival_store() -> FixtureStore {
+    let fixture: Fixture = serde_json::from_value(json!({
+        "meetings": [
+            { "date": "2026-10-17", "state": "VIC", "venue": "Caulfield", "races": [
+                { "race_number": 8, "name": "Caulfield Cup", "start_local": "17:00", "distance_m": 2400, "grade": "Group 1", "runners": [
+                    { "number": 1, "horse": "Cup Winner", "jockey": "A. Jockey", "trainer": "T. One", "barrier": 4, "last10": "21" },
+                    { "number": 2, "horse": "Second Horse", "jockey": "B. Rider", "trainer": "T. Two", "barrier": 7, "last10": "13" }
+                ] }
+            ] },
+            { "date": "2026-10-24", "state": "VIC", "venue": "Moonee Valley", "races": [
+                { "race_number": 9, "name": "Cox Plate", "start_local": "17:05", "distance_m": 2040, "grade": "Group 1", "runners": [
+                    { "number": 1, "horse": "Plate One", "jockey": "C. Hoop", "trainer": "T. One", "barrier": 1, "last10": "11" },
+                    { "number": 2, "horse": "Plate Two", "jockey": "D. Hoop", "trainer": "T. Two", "barrier": 2, "last10": "32" },
+                    { "number": 3, "horse": "Plate Three", "jockey": "E. Hoop", "trainer": "T. Three", "barrier": 3, "last10": "4x" },
+                    { "number": 4, "horse": "Plate Scratched", "jockey": "F. Hoop", "trainer": "T. Four", "barrier": 4, "last10": "5", "scratched": true }
+                ] }
+            ] },
+            { "date": "2026-11-03", "state": "VIC", "venue": "Flemington", "races": [
+                { "race_number": 6, "name": "", "start_local": "13:30", "distance_m": 1200, "grade": "Group 1", "runners": [] },
+                { "race_number": 7, "name": "", "start_local": "15:00", "distance_m": 3200, "grade": "Group 1", "runners": [] }
+            ] }
+        ],
+        "results": [
+            { "date": "2026-10-17", "venue": "Caulfield", "race_number": 8, "placings": [
+                { "position": 1, "number": 1, "horse": "Cup Winner", "jockey": "A. Jockey" },
+                { "position": 2, "number": 2, "horse": "Second Horse", "jockey": "B. Rider", "margin_lengths": 0.5 }
+            ] },
+            { "date": "2026-11-03", "venue": "Flemington", "race_number": 7, "placings": [
+                { "position": 1, "number": 3, "horse": "Stayer King", "jockey": "G. Rider" },
+                { "position": 2, "number": 5, "horse": "Also Ran", "jockey": "H. Rider", "margin_lengths": 1.2 }
+            ] }
+        ]
+    }))
+    .unwrap();
+    FixtureStore::from_fixture(fixture)
+}
+
+/// The carnival guide asked at `now` (RFC 3339, UTC) with `args`.
+async fn carnival_at(now: &str, args: Value) -> Value {
+    let app = app_with(
+        false,
+        Arc::new(carnival_store()),
+        Arc::new(InMemory::default()),
+        now,
+    )
+    .await;
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("carnival_guide", args)),
+    )
+    .await;
+    v
+}
+
+/// What every carnival answer must be: one breath, no holes, no wagering, no dashes.
+fn reads_cleanly(text: &str) {
+    assert!(text.split_whitespace().count() <= 80, "too long: {text}");
+    assert!(!text.contains("  "), "double space: {text}");
+    assert!(!text.contains('\u{2014}'), "dash: {text}");
+    let lower = text.to_lowercase();
+    for word in [
+        "odds",
+        "bet",
+        "tip",
+        "tips",
+        "chance",
+        "likely",
+        "contender",
+        "favourite",
+    ] {
+        assert!(!has_word(&lower, word), "{word}: {text}");
+    }
+}
+
+#[tokio::test]
+async fn carnival_guide_knows_the_cup_is_won_and_the_cox_plate_is_next() {
+    // Tuesday 20 October, 9 am in Melbourne.
+    let v = carnival_at("2026-10-19T22:00:00Z", json!({})).await;
+    let text = spoken(&v);
+    reads_cleanly(&text);
+    assert!(
+        text.starts_with("Next up is the Cox Plate at Moonee Valley this Saturday, 24 October, 4 days away: the weight-for-age championship of Australasia. Fields are out: 3 runners, jumping at 5:05 pm."),
+        "{text}"
+    );
+    assert!(
+        text.contains("Last Saturday the Caulfield Cup was won by Cup Winner, ridden by A. Jockey, by half a length."),
+        "{text}"
+    );
+    assert!(
+        text.contains("Four more follow, through to the Champions Stakes on Saturday 7 November; ask me about any by name."),
+        "{text}"
+    );
+    let s = &v["result"]["structuredContent"];
+    assert_eq!(s["next"], "Cox Plate");
+    assert_eq!(s["latest"], "Caulfield Cup");
+    let races = s["races"].as_array().unwrap();
+    assert_eq!(races.len(), 7);
+    assert_eq!(races[0]["status"], "run");
+    assert_eq!(races[0]["result"], Value::Null);
+    assert_eq!(races[1]["status"], "run");
+    assert_eq!(races[1]["result"]["winner"], "Cup Winner");
+    assert_eq!(races[1]["result"]["jockey"], "A. Jockey");
+    assert_eq!(races[1]["result"]["margin_lengths"], 0.5);
+    assert_eq!(races[1]["days_to_go"], Value::Null);
+    assert_eq!(races[2]["status"], "ahead");
+    assert_eq!(races[2]["days_to_go"], 4);
+    assert_eq!(races[2]["race_number"], 9);
+    assert_eq!(races[2]["runners"], 3);
+    assert_eq!(races[3]["status"], "fields_not_out");
+    assert_eq!(races[3]["days_to_go"], 11);
+    for r in races {
+        assert!(
+            ["run", "today", "ahead", "fields_not_out"].contains(&r["status"].as_str().unwrap()),
+            "{r}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn after_the_carnival_every_feature_reads_in_the_past_tense() {
+    // Sunday 15 November, inside the judging window.
+    let v = carnival_at("2026-11-14T22:00:00Z", json!({})).await;
+    let text = spoken(&v);
+    reads_cleanly(&text);
+    assert!(
+        text.starts_with("The 2026 Spring Carnival is over: all 7 feature races have been run. The Caulfield Cup went to Cup Winner and the Melbourne Cup to Stayer King."),
+        "{text}"
+    );
+    assert!(
+        text.contains("I don't have the results of the Caulfield Guineas, the Cox Plate, the Victoria Derby, the VRC Oaks and the Champions Stakes on file."),
+        "{text}"
+    );
+    assert!(!text.contains("on Tuesday 3 November"), "{text}");
+    let s = &v["result"]["structuredContent"];
+    assert_eq!(s["carnival_over"], true);
+    assert_eq!(s["next"], Value::Null);
+    for r in s["races"].as_array().unwrap() {
+        assert_eq!(r["status"], "run", "{r}");
+        let said = r["said"].as_str().unwrap();
+        assert!(said.contains(" was "), "{said}");
+        assert!(!said.contains(" is at "), "{said}");
+        assert!(!said.contains("days away"), "{said}");
+        if said.contains("on Tuesday 3 November") {
+            assert!(said.contains("was"), "{said}");
+        }
+    }
+    // The Melbourne Cup's card named no race: it was found as the Group 1 over 3200 metres.
+    assert_eq!(s["races"][4]["result"]["winner"], "Stayer King");
+    assert_eq!(s["races"][4]["result"]["margin"], "1.2 lengths");
+}
+
+#[tokio::test]
+async fn a_feature_with_no_result_still_reads_cleanly() {
+    let v = carnival_at("2026-11-14T22:00:00Z", json!({"race": "Victoria Derby"})).await;
+    assert_eq!(
+        spoken(&v),
+        "The Victoria Derby was run at Flemington on Saturday 31 October; I don't have the result on file."
+    );
+    let v = carnival_at("2026-10-19T22:00:00Z", json!({"race": "the Guineas"})).await;
+    assert_eq!(
+        spoken(&v),
+        "The Caulfield Guineas was run at Caulfield on Saturday 10 October; I don't have the result on file."
+    );
+    let v = carnival_at("2026-10-19T22:00:00Z", json!({"race": "Caulfield Cup"})).await;
+    assert_eq!(
+        spoken(&v),
+        "Last Saturday, 17 October, the Caulfield Cup at Caulfield was won by Cup Winner, ridden by A. Jockey, by half a length. Source: Racing Australia."
+    );
+}
+
+#[tokio::test]
+async fn the_carnival_guide_fits_one_breath_on_any_day() {
+    for now in [
+        "2026-10-03T22:00:00Z", // 4 October: before it starts
+        "2026-10-09T22:00:00Z", // the day before the Guineas
+        "2026-10-17T03:00:00Z", // Cup day, result in
+        "2026-10-24T05:30:00Z", // Cox Plate day, 4:30 pm
+        "2026-11-02T22:00:00Z", // Melbourne Cup morning
+        "2026-11-06T22:00:00Z", // Champions Stakes day
+        "2026-11-19T22:00:00Z", // 20 November
+    ] {
+        let v = carnival_at(now, json!({})).await;
+        reads_cleanly(&spoken(&v));
+        let races = v["result"]["structuredContent"]["races"]
+            .as_array()
+            .unwrap();
+        assert_eq!(races.len(), 7, "{now}");
+    }
+    let v = carnival_at("2026-10-03T22:00:00Z", json!({})).await;
+    assert!(
+        spoken(&v).starts_with("The carnival opens with the Caulfield Guineas at Caulfield this Saturday, 10 October, 6 days away"),
+        "{}",
+        spoken(&v)
+    );
+    let v = carnival_at("2026-10-24T05:30:00Z", json!({})).await;
+    assert!(
+        spoken(&v).starts_with("Today is Cox Plate day at Moonee Valley: the weight-for-age championship of Australasia. It's race 9, with 3 runners, jumping at 5:05 pm, due to jump in about 35 minutes."),
+        "{}",
+        spoken(&v)
+    );
+    assert_eq!(
+        v["result"]["structuredContent"]["races"][2]["status"],
+        "today"
+    );
+}
+
+#[tokio::test]
+async fn asking_for_the_cox_plate_answers_about_that_race_alone() {
+    let v = carnival_at("2026-10-19T22:00:00Z", json!({"race": "Cox Plate"})).await;
+    let text = spoken(&v);
+    reads_cleanly(&text);
+    assert_eq!(
+        text,
+        "The Cox Plate is at Moonee Valley this Saturday, 24 October, 4 days away: the weight-for-age championship of Australasia. Fields are out: 3 runners, jumping at 5:05 pm. Source: Racing Australia."
+    );
+    let s = &v["result"]["structuredContent"];
+    assert_eq!(s["found"], true);
+    assert_eq!(s["race"]["name"], "Cox Plate");
+    assert_eq!(s["races"].as_array().unwrap().len(), 1);
+    // Heard by sound, and asked back when the words fit two races.
+    let v = carnival_at("2026-10-19T22:00:00Z", json!({"race": "cocks plate"})).await;
+    assert_eq!(
+        v["result"]["structuredContent"]["race"]["name"],
+        "Cox Plate"
+    );
+    let v = carnival_at("2026-10-19T22:00:00Z", json!({"race": "the Cup"})).await;
+    assert_eq!(
+        spoken(&v),
+        "I couldn't place the Cup. Did you mean the Caulfield Cup or the Melbourne Cup?"
+    );
+    let v = carnival_at("2026-10-19T22:00:00Z", json!({"race": "Golden Slipper"})).await;
+    assert_eq!(v["result"]["structuredContent"]["found"], false);
+    assert!(
+        spoken(&v).starts_with("Golden Slipper isn't one of the Spring Carnival's feature races."),
+        "{}",
+        spoken(&v)
+    );
+    // A race ahead with no field yet says so; a date argument moves the guide's day.
+    let v = carnival_at(
+        "2026-10-13T22:00:00Z",
+        json!({"race": "Melbourne Cup", "date": "2026-10-20"}),
+    )
+    .await;
+    assert_eq!(
+        spoken(&v),
+        "The Melbourne Cup is at Flemington on Tuesday 3 November, 14 days away: the race that stops a nation. Fields aren't out yet."
+    );
+}

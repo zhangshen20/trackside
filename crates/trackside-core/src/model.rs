@@ -509,24 +509,143 @@ pub struct FeatureRace {
     pub grade: &'static str,
     pub distance_m: u32,
     pub blurb: &'static str,
+    /// The blurb cut to a phrase a guide can say in one breath: "the race that stops a
+    /// nation".
+    pub tagline: &'static str,
 }
 
 pub fn spring_carnival_2026() -> Vec<FeatureRace> {
     let d = |y, m, d| NaiveDate::from_ymd_opt(y, m, d).expect("valid date");
     vec![
-        FeatureRace { name: "Caulfield Guineas", date: d(2026, 10, 10), venue: "Caulfield", grade: "Group 1", distance_m: 1600, blurb: "The premier mile for three-year-olds; a proving ground for future stallions." },
-        FeatureRace { name: "Caulfield Cup", date: d(2026, 10, 17), venue: "Caulfield", grade: "Group 1", distance_m: 2400, blurb: "Australia's richest handicap over 2400 m and the traditional lead-up to the Melbourne Cup." },
-        FeatureRace { name: "Cox Plate", date: d(2026, 10, 24), venue: "Moonee Valley", grade: "Group 1", distance_m: 2040, blurb: "The weight-for-age championship of Australasia, run on the tight Moonee Valley circuit." },
-        FeatureRace { name: "Victoria Derby", date: d(2026, 10, 31), venue: "Flemington", grade: "Group 1", distance_m: 2500, blurb: "The classic for three-year-olds that opens Melbourne Cup week." },
-        FeatureRace { name: "Melbourne Cup", date: d(2026, 11, 3), venue: "Flemington", grade: "Group 1", distance_m: 3200, blurb: "The race that stops a nation: a 3200 m handicap run on the first Tuesday of November since 1861." },
-        FeatureRace { name: "VRC Oaks", date: d(2026, 11, 5), venue: "Flemington", grade: "Group 1", distance_m: 2500, blurb: "The fillies' classic on Oaks Day." },
-        FeatureRace { name: "Champions Stakes", date: d(2026, 11, 7), venue: "Flemington", grade: "Group 1", distance_m: 2000, blurb: "The weight-for-age feature that closes the Flemington carnival." },
+        FeatureRace { name: "Caulfield Guineas", date: d(2026, 10, 10), venue: "Caulfield", grade: "Group 1", distance_m: 1600, blurb: "The premier mile for three-year-olds; a proving ground for future stallions.", tagline: "the premier mile for three-year-olds" },
+        FeatureRace { name: "Caulfield Cup", date: d(2026, 10, 17), venue: "Caulfield", grade: "Group 1", distance_m: 2400, blurb: "Australia's richest handicap over 2400 m and the traditional lead-up to the Melbourne Cup.", tagline: "the 2400 metre handicap that leads to the Melbourne Cup" },
+        FeatureRace { name: "Cox Plate", date: d(2026, 10, 24), venue: "Moonee Valley", grade: "Group 1", distance_m: 2040, blurb: "The weight-for-age championship of Australasia, run on the tight Moonee Valley circuit.", tagline: "the weight-for-age championship of Australasia" },
+        FeatureRace { name: "Victoria Derby", date: d(2026, 10, 31), venue: "Flemington", grade: "Group 1", distance_m: 2500, blurb: "The classic for three-year-olds that opens Melbourne Cup week.", tagline: "the classic for three-year-olds that opens Cup week" },
+        FeatureRace { name: "Melbourne Cup", date: d(2026, 11, 3), venue: "Flemington", grade: "Group 1", distance_m: 3200, blurb: "The race that stops a nation: a 3200 m handicap run on the first Tuesday of November since 1861.", tagline: "the race that stops a nation" },
+        FeatureRace { name: "VRC Oaks", date: d(2026, 11, 5), venue: "Flemington", grade: "Group 1", distance_m: 2500, blurb: "The fillies' classic on Oaks Day.", tagline: "the fillies' classic" },
+        FeatureRace { name: "Champions Stakes", date: d(2026, 11, 7), venue: "Flemington", grade: "Group 1", distance_m: 2000, blurb: "The weight-for-age feature that closes the Flemington carnival.", tagline: "the weight-for-age feature that closes the carnival" },
     ]
+}
+
+/// The feature race a listener means, by its name as heard: "Cox Plate", "the Cox Plate",
+/// "Cocks Plate", "the Derby", "Oaks". `Err` carries the features it could be: several when
+/// the words fit more than one ("Caulfield", "the Cup"), none when nothing fits, so the
+/// caller can ask rather than guess.
+pub fn resolve_feature(heard: &str) -> Result<FeatureRace, Vec<&'static str>> {
+    let features = spring_carnival_2026();
+    let named = |name: &str| {
+        features
+            .iter()
+            .find(|f| f.name == name)
+            .cloned()
+            .ok_or_else(Vec::new)
+    };
+    let mut said = crate::store::norm(heard);
+    if let Some(rest) = said.strip_prefix("the ") {
+        said = rest.to_string();
+    }
+    for tail in [" 2026", " day", " race"] {
+        if let Some(rest) = said.strip_suffix(tail) {
+            said = rest.to_string();
+        }
+    }
+    // Names the sponsors and the history books use for the same races.
+    for (alias, name) in [
+        ("kennedy oaks", "VRC Oaks"),
+        ("crown oaks", "VRC Oaks"),
+        ("vrc derby", "Victoria Derby"),
+        ("ws cox plate", "Cox Plate"),
+        ("w s cox plate", "Cox Plate"),
+        ("vrc champions stakes", "Champions Stakes"),
+    ] {
+        if said == alias {
+            return named(name);
+        }
+    }
+    if said.is_empty() {
+        return Err(vec![]);
+    }
+    if let Some(f) = features.iter().find(|f| crate::store::norm(f.name) == said) {
+        return Ok(f.clone());
+    }
+    // Every word said is a word of the name: "Cox", "Derby", "Caulfield".
+    let words: Vec<&str> = said.split_whitespace().collect();
+    let containing: Vec<&FeatureRace> = features
+        .iter()
+        .filter(|f| {
+            let name = crate::store::norm(f.name);
+            let name_words: Vec<&str> = name.split_whitespace().collect();
+            words.iter().all(|w| name_words.contains(w))
+        })
+        .collect();
+    match containing.as_slice() {
+        [one] => return Ok((*one).clone()),
+        [] => {}
+        many => return Err(many.iter().map(|f| f.name).collect()),
+    }
+    let names: Vec<&'static str> = features.iter().map(|f| f.name).collect();
+    if let Some(name) = crate::names::best(&said, names.iter().copied()) {
+        return named(name);
+    }
+    // The name said inside a longer phrase: "Moonee Valley Cox Plate", "Cox Plate at the
+    // Valley". The longest run of words that is a feature's name wins.
+    for len in (1..words.len()).rev() {
+        for run in words.windows(len) {
+            if let Some(name) = crate::names::best(&run.join(" "), names.iter().copied()) {
+                return named(name);
+            }
+        }
+    }
+    Err(crate::names::closest(&said, names.iter().copied(), 3)
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_races_are_found_the_way_they_are_said() {
+        for (heard, name) in [
+            ("Cox Plate", "Cox Plate"),
+            ("the Cox Plate", "Cox Plate"),
+            ("cocks plate", "Cox Plate"),
+            ("Melbourne Cup", "Melbourne Cup"),
+            ("melbourne cup day", "Melbourne Cup"),
+            ("the Derby", "Victoria Derby"),
+            ("Oaks", "VRC Oaks"),
+            ("Kennedy Oaks", "VRC Oaks"),
+            ("Caulfield Guineas", "Caulfield Guineas"),
+            ("Cofield Cup", "Caulfield Cup"),
+            ("Champions Stakes", "Champions Stakes"),
+            ("Moony Valley Cox Plate", "Cox Plate"),
+            ("the Melbourne Cup at Flemington", "Melbourne Cup"),
+        ] {
+            assert_eq!(resolve_feature(heard).map(|f| f.name), Ok(name), "{heard}");
+        }
+        assert_eq!(
+            resolve_feature("Caulfield").map(|f| f.name),
+            Err(vec!["Caulfield Guineas", "Caulfield Cup"])
+        );
+        assert_eq!(
+            resolve_feature("the Cup").map(|f| f.name),
+            Err(vec!["Caulfield Cup", "Melbourne Cup"])
+        );
+        assert_eq!(
+            resolve_feature("Golden Slipper").map(|f| f.name),
+            Err(vec![])
+        );
+    }
+
+    #[test]
+    fn every_feature_has_a_short_tagline() {
+        for f in spring_carnival_2026() {
+            assert!(f.tagline.split_whitespace().count() <= 10, "{}", f.name);
+            assert!(f.tagline.starts_with("the "), "{}", f.name);
+        }
+    }
 
     #[test]
     fn bookmaker_brands_are_removed_from_names() {

@@ -89,6 +89,7 @@ For each, note: right tool first time, arguments correct, answer short enough to
 Run on the Mac that deploys (`HR_ENV=staging SNAPSHOT_FROM=... SNAPSHOT_TO=... deploy/deploy.sh`), straight after it prints the URL:
 
 - [ ] `scripts/smoke.sh` passes against the printed URL (set `DATE` etc. to the new snapshot's range).
+- [ ] `SNAPSHOT_FROM` is on or before 2026-10-10, so the Caulfield Guineas and Caulfield Cup results stay in the snapshot and `carnival_guide` still names their winners for judges testing through 20 November.
 - [ ] `list_meetings` for the last date of the snapshot returns meetings (the snapshot really updated).
 - [ ] `race_result` for a race run on the last day has a fastest last 600 m (sectionals joined).
 - [ ] `horse_form` for that race's winner lists the win as its latest start (results fold into form).
