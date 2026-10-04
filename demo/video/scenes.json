@@ -1,0 +1,93 @@
+{
+  "sim_url": "http://127.0.0.1:8001/sim",
+  "viewport": {
+    "width": 1280,
+    "height": 720
+  },
+  "scale": 1.5,
+  "voices": {
+    "narrator": {
+      "polly": "Matthew",
+      "engine": "neural",
+      "espeak": "en-us+m3",
+      "rate": "106%"
+    },
+    "alexa": {
+      "polly": "Olivia",
+      "engine": "neural",
+      "espeak": "en-gb+f3",
+      "rate": "104%"
+    }
+  },
+  "scenes": [
+    {
+      "id": "01-hook",
+      "type": "sim",
+      "reload": true,
+      "memory": "forget",
+      "ask": "Who ran home fastest in race 6 at Flemington on Saturday?",
+      "expect": "33\\.58"
+    },
+    {
+      "id": "02-title",
+      "type": "card",
+      "card": "title",
+      "narration": "Racing is Australia's biggest spring sport, and nearly every app about it wants to sell you a bet. Trackside is the mate who knows the form instead: an Alexa Plus add-on, built as an MCP server, that never mentions a price."
+    },
+    {
+      "id": "03-follow",
+      "type": "sim",
+      "ask": "Follow The Next Episode.",
+      "narration_after": "Trackside remembers your stable between sessions."
+    },
+    {
+      "id": "04-later",
+      "type": "card",
+      "card": "later",
+      "narration": "Three days later."
+    },
+    {
+      "id": "05-stable",
+      "type": "sim",
+      "reload": true,
+      "memory": "last-checked:2026-10-01",
+      "ask": "How's my stable?",
+      "expect": "since you last",
+      "narration_after": "That memory lives in DynamoDB, keyed by your account, so days later Trackside opens with what you missed. Say 'forget me' and it's gone."
+    },
+    {
+      "id": "06-racecard",
+      "type": "sim",
+      "reload": true,
+      "ask": "Show me race 4 at Warwick Farm tomorrow.",
+      "expect": "Drinkwise",
+      "narration_after": "On a screen, Trackside draws its own answers: this race card is an MCP App served by the Trackside server, with a form strip and where each horse usually settles. Tap a horse, and the App calls the server for its form.",
+      "then": [
+        {
+          "tap": "Storm Season",
+          "at": 0.62
+        }
+      ]
+    },
+    {
+      "id": "07-run",
+      "type": "sim",
+      "reload": true,
+      "ask": "Who won the Turnbull Stakes, race 8 at Flemington on Saturday?",
+      "expect": "Cosmic Crusader",
+      "narration_after": "Official sectional timing turns a result into a story: who ran home fastest, and from where."
+    },
+    {
+      "id": "08-arch",
+      "type": "card",
+      "card": "arch",
+      "narration": "Under the hood: Rust on an arm64 Lambda behind API Gateway. Streamable HTTP, and OAuth 2.1 with PKCE through Cognito, as Alexa Plus asks. Racing Australia data is rebuilt twice a day into a snapshot on S3, memory lives in DynamoDB, and Claude on Bedrock plays Alexa Plus in the simulator. One CloudFormation stack, open source under MIT."
+    },
+    {
+      "id": "09-close",
+      "type": "card",
+      "card": "close",
+      "narration": "Trackside: the form, not the odds. The repo and a test account are in the submission. See you at the Cup."
+    }
+  ]
+}
