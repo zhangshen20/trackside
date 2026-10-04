@@ -16,7 +16,7 @@ use crate::auth::Auth;
 use crate::build_app;
 use crate::clock::FixedClock;
 use crate::memory::{InMemory, Memory, Profile};
-use trackside_core::FixtureStore;
+use trackside_core::{Fixture, FixtureStore, RaceCard, SectionalHighlight};
 
 /// Every test runs on Wednesday 14 October 2026, Melbourne time: three days before the
 /// fixture's Caulfield Cup card and after its Flemington results, so "today", "since you
@@ -54,13 +54,45 @@ async fn app(with_auth: bool) -> axum::Router {
 }
 
 async fn app_with_memory(with_auth: bool, memory: Arc<dyn Memory>) -> axum::Router {
-    let store = Arc::new(
-        FixtureStore::load(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../fixtures/demo.json"
-        ))
-        .unwrap(),
-    );
+    app_with(with_auth, Arc::new(demo_store()), memory).await
+}
+
+/// The demo fixture the server runs on locally.
+fn demo_store() -> FixtureStore {
+    FixtureStore::load(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/demo.json"
+    ))
+    .unwrap()
+}
+
+/// Two meetings on one Saturday whose venues share a word: Warwick Farm in Sydney and
+/// Warwick in Queensland. Race 1 at Warwick Farm is a field with no form to speak of.
+fn two_warwicks() -> FixtureStore {
+    let fixture: Fixture = serde_json::from_value(json!({
+        "meetings": [
+            { "date": "2026-10-17", "state": "NSW", "venue": "Warwick Farm", "races": [
+                { "race_number": 1, "name": "The Galaxy", "start_local": "12:30", "distance_m": 1100, "runners": [
+                    { "number": 1, "horse": "First Timer", "jockey": "A. Rider", "trainer": "B. Yard", "barrier": 3, "last10": "" },
+                    { "number": 2, "horse": "Trial Only", "jockey": "C. Hoop", "trainer": "D. Barn", "barrier": 5, "last10": "x" }
+                ] }
+            ] },
+            { "date": "2026-10-17", "state": "QLD", "venue": "Warwick", "races": [
+                { "race_number": 2, "name": "", "start_local": "13:05", "distance_m": 1200, "runners": [
+                    { "number": 1, "horse": "Country Mile", "jockey": "E. Rider", "trainer": "F. Yard", "barrier": 1, "last10": "32" }
+                ] }
+            ] }
+        ]
+    }))
+    .unwrap();
+    FixtureStore::from_fixture(fixture)
+}
+
+async fn app_with(
+    with_auth: bool,
+    store: Arc<FixtureStore>,
+    memory: Arc<dyn Memory>,
+) -> axum::Router {
     let auth = if with_auth {
         let auth = Arc::new(Auth::new(
             ISSUER.into(),
@@ -129,6 +161,15 @@ fn spoken(v: &Value) -> String {
         .as_str()
         .unwrap_or_default()
         .to_string()
+}
+
+/// Whether `text` has `word` as a whole word: "bet" in "a bet", not in "better" or "alphabet".
+fn has_word(text: &str, word: &str) -> bool {
+    text.match_indices(word).any(|(i, _)| {
+        let before = text[..i].chars().next_back();
+        let after = text[i + word.len()..].chars().next();
+        before.is_none_or(|c| !c.is_alphanumeric()) && after.is_none_or(|c| !c.is_alphanumeric())
+    })
 }
 
 #[tokio::test]
@@ -441,6 +482,147 @@ async fn stable_catches_up_on_runs_since_the_last_check() {
     );
 }
 
+/// A last check is a whole day, and the race that day may have had no result yet when the
+/// listener asked, so the catch-up starts from that day, not the day after.
+#[tokio::test]
+async fn stable_catches_up_on_a_run_from_the_day_it_last_checked() {
+    let memory = Arc::new(InMemory::default());
+    let profile = Profile {
+        horses: vec!["Demo Miler".into()],
+        last_checked: Some("2026-09-26".parse().unwrap()),
+        ..Default::default()
+    };
+    memory.save("local", &profile).await.unwrap();
+    let app = app_with_memory(false, memory).await;
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("my_stable", json!({"date": "2026-09-27"}))),
+    )
+    .await;
+    let text = spoken(&v);
+    assert!(
+        text.starts_with("Since you last checked on Saturday 26 September: Demo Miler ran 2nd of 12 at Flemington on Saturday 26 September"),
+        "{text}"
+    );
+    assert_eq!(v["result"]["structuredContent"]["catch_up"][0]["finish"], 2);
+}
+
+#[test]
+fn a_race_name_that_starts_with_the_keeps_one_article() {
+    let race = |name: &str| RaceCard {
+        name: name.into(),
+        distance_m: Some(1100),
+        grade: "Group 1".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        crate::tools::named_race(&race("The Galaxy")),
+        "The Galaxy, a Group 1 race over 1100 metres"
+    );
+    assert_eq!(
+        crate::tools::named_race(&race("the galaxy")),
+        "the galaxy, a Group 1 race over 1100 metres"
+    );
+    assert_eq!(
+        crate::tools::named_race(&race("Caulfield Cup")),
+        "the Caulfield Cup, a Group 1 race over 1100 metres"
+    );
+    // A name that merely begins with those letters still takes the article.
+    assert_eq!(
+        crate::tools::named_race(&race("Theodore Stakes")),
+        "the Theodore Stakes, a Group 1 race over 1100 metres"
+    );
+}
+
+#[tokio::test]
+async fn a_venue_word_two_meetings_answer_to_is_asked_about() {
+    let app = app_with(
+        false,
+        Arc::new(two_warwicks()),
+        Arc::new(InMemory::default()),
+    )
+    .await;
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call(
+            "get_race_card",
+            json!({"venue": "Warwick", "race_number": 1, "date": "2026-10-17"}),
+        )),
+    )
+    .await;
+    assert_eq!(v["result"]["structuredContent"]["found"], false, "{v}");
+    assert_eq!(
+        v["result"]["structuredContent"]["did_you_mean"],
+        json!(["Warwick Farm", "Warwick"])
+    );
+    assert!(
+        spoken(&v).ends_with("Did you mean Warwick Farm or Warwick?"),
+        "{}",
+        spoken(&v)
+    );
+    // Said in full, Warwick Farm is meant, though its name contains the other venue's.
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call(
+            "get_race_card",
+            json!({"venue": "Warwick Farm", "race_number": 1, "date": "2026-10-17"}),
+        )),
+    )
+    .await;
+    assert!(
+        spoken(&v).starts_with("Race 1 at Warwick Farm is The Galaxy, a race over 1100 metres. 2 runners, jumping at 12:30 pm."),
+        "{}",
+        spoken(&v)
+    );
+}
+
+#[tokio::test]
+async fn explanations_leave_out_form_nobody_has() {
+    let app = app_with(
+        false,
+        Arc::new(two_warwicks()),
+        Arc::new(InMemory::default()),
+    )
+    .await;
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call(
+            "explain_race",
+            json!({"venue": "Warwick Farm", "race_number": 1, "date": "2026-10-17"}),
+        )),
+    )
+    .await;
+    let text = spoken(&v);
+    assert!(
+        text.starts_with("The Galaxy: A race over 1100 metres. Track is not yet rated. Source:"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("belongs to") && !text.contains("0 wins"),
+        "{text}"
+    );
+    let structured = &v["result"]["structuredContent"];
+    assert_eq!(
+        structured["strongest_recent_form"],
+        json!([]),
+        "{structured}"
+    );
+    assert_eq!(structured["race"], "The Galaxy");
+    assert!(structured.get("contenders").is_none(), "{structured}");
+}
+
 /// On the Wednesday before the Caulfield Cup, following a horse says when it runs next, and
 /// the stable report names each horse's next run instead of only its last start.
 #[tokio::test]
@@ -714,9 +896,33 @@ async fn screen_tools_point_at_the_mcp_app() {
     assert_eq!(contents["mimeType"], "text/html;profile=mcp-app");
     let html = contents["text"].as_str().unwrap();
     assert!(html.contains("ui/initialize") && html.contains("tools/call"));
-    // The view draws what tools return; it must never fetch anything itself or show prices.
-    for banned in ["fetch(", "XMLHttpRequest", "http://", "odds", "betting"] {
-        assert!(!html.contains(banned), "the app contains {banned}");
+    // The view draws what tools return: it must never reach the network itself, load anything
+    // from outside, or show prices or bookmakers.
+    let lower = html.to_lowercase();
+    for banned in [
+        "fetch(",
+        "xmlhttprequest",
+        "http://",
+        "https://",
+        "import(",
+        "sendbeacon",
+        "websocket",
+        "eventsource",
+        "<img",
+        "<link",
+        "betting",
+        "wager",
+        "bookmaker",
+        "sportsbet",
+        "ladbrokes",
+        "bet365",
+        "pointsbet",
+    ] {
+        assert!(!lower.contains(banned), "the app contains {banned}");
+    }
+    // Short words are checked whole, so "better" and "alphabet" don't trip them.
+    for word in ["odds", "bet", "neds"] {
+        assert!(!has_word(&lower, word), "the app mentions {word}");
     }
 }
 
@@ -736,10 +942,63 @@ async fn results_say_how_the_race_was_run() {
     .await;
     let text = spoken(&v);
     assert!(
-        text.contains("How it was run: Sample Stayer came from 5th at the 800 and ran its last 600 in 34.9 seconds. Demo Miler ran the fastest last 600, 34.6 seconds, from 9th at the 800 to finish 2nd, according to racing.com sectional timing."),
+        text.contains("How it was run: Sample Stayer came from 5th at the 800 and ran its last 600 in 34.9 seconds, according to racing.com sectional timing. Demo Miler ran the fastest last 600, 34.6 seconds, from 9th at the 800 to finish 2nd, according to racing.com sectional timing."),
         "{text}"
     );
     assert_eq!(v["result"]["structuredContent"]["run"][2]["pos_800"], 1);
+}
+
+/// Two runs clocked at the same time are equal-fastest, whichever one the feed names, and
+/// the sectional source is given with the times, not with a placegetter's position at the
+/// 800, which is Racing Australia's.
+#[test]
+fn equal_last_600_times_are_equal_fastest() {
+    use crate::tools::{how_it_was_run, RunLine};
+    let line = |position, horse: &str, pos_800, last_600_s, story: Option<&str>| RunLine {
+        position,
+        horse: horse.into(),
+        pos_800,
+        pos_400: None,
+        last_600_s: Some(last_600_s),
+        story: story.map(Into::into),
+    };
+    let run = [
+        line(1, "Sample Stayer", Some(2), 34.6, None),
+        line(
+            2,
+            "Demo Miler",
+            Some(9),
+            34.6,
+            Some("came from 9th at the 800"),
+        ),
+        line(
+            3,
+            "Placeholder Prince",
+            Some(10),
+            35.4,
+            Some("came from 10th at the 800"),
+        ),
+    ];
+    let fastest = SectionalHighlight {
+        horse: "Demo Miler".into(),
+        last_600_s: 34.6,
+        source: "racing.com sectional timing".into(),
+    };
+    assert_eq!(
+        how_it_was_run(&run, Some(&fastest)),
+        " How it was run: Sample Stayer ran the equal-fastest last 600 in the race, 34.6 seconds, according to racing.com sectional timing. Demo Miler ran the equal-fastest last 600, 34.6 seconds, from 9th at the 800 to finish 2nd, according to racing.com sectional timing. Placeholder Prince came from 10th at the 800 to run 3rd."
+    );
+    // One clear fastest time is still just the fastest.
+    let fastest = SectionalHighlight {
+        last_600_s: 34.4,
+        ..fastest
+    };
+    let mut run = run;
+    run[1].last_600_s = Some(34.4);
+    assert!(
+        how_it_was_run(&run, Some(&fastest))
+            .contains("Demo Miler ran the fastest last 600, 34.4 seconds, from 9th at the 800 to finish 2nd, according to"),
+    );
 }
 
 #[tokio::test]
@@ -785,6 +1044,22 @@ async fn form_and_explanations_say_where_horses_settle() {
         !text.contains("1 wins") && !text.contains("ones to watch"),
         "{text}"
     );
+    // Form is ranked by recent wins; the sentence is about runs that happened, never gaps.
+    assert!(
+        text.contains("The strongest recent form belongs to Sample Stayer (3 wins in its last 5 starts), Placeholder Prince (3 wins in its last 5 starts) and Demo Miler (1 win in its last 5 starts)."),
+        "{text}"
+    );
+    assert!(
+        !text.contains("0 wins in its last 0") && !text.contains("belongs to ."),
+        "{text}"
+    );
+    let structured = &v["result"]["structuredContent"];
+    assert_eq!(
+        structured["strongest_recent_form"],
+        json!(["Sample Stayer", "Placeholder Prince", "Demo Miler"]),
+        "{structured}"
+    );
+    assert_eq!(structured["race"], "Caulfield Cup");
     let (_, _, v) = send(
         &app,
         "POST",

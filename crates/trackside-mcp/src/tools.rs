@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use trackside_core::{
-    engagements_in, horse_key, looks_like_track_code, prize_total, run_style, spoken_money,
+    engagements_in, horse_key, looks_like_track_code, norm, prize_total, run_style, spoken_money,
     spring_carnival_2026, venue_matches, Engagement, Meeting, RaceCard, Record, RunStyle,
     SectionalHighlight, Store, SOURCE_RACING_AUSTRALIA, SOURCE_SECTIONALS,
 };
@@ -177,7 +177,12 @@ fn next_run_words(e: &Engagement, from: NaiveDate) -> String {
     let race = if e.race_name.is_empty() {
         format!("race {} at {}", e.race_number, e.venue)
     } else {
-        format!("the {}, race {} at {}", e.race_name, e.race_number, e.venue)
+        format!(
+            "{}, race {} at {}",
+            with_article(&e.race_name),
+            e.race_number,
+            e.venue
+        )
     };
     if e.scratched {
         return format!("has been scratched from {race} {when}");
@@ -211,11 +216,24 @@ fn answer(spoken: String, structured: serde_json::Value) -> CallToolResult {
 
 /// "the Manikato Stakes, a Group 1 race over 1200 metres", or just "a race over 1200 metres"
 /// when the race has no name once its wagering sponsor is removed.
-fn named_race(card: &RaceCard) -> String {
+pub(crate) fn named_race(card: &RaceCard) -> String {
     if card.name.is_empty() {
         describe_race(card)
     } else {
-        format!("the {}, {}", card.name, describe_race(card))
+        format!("{}, {}", with_article(&card.name), describe_race(card))
+    }
+}
+
+/// "the Manikato Stakes", but "The Galaxy" as it is: a name that already starts with an
+/// article doesn't get a second one.
+fn with_article(name: &str) -> String {
+    let starts_with_the = name
+        .get(..4)
+        .is_some_and(|lead| lead.eq_ignore_ascii_case("the "));
+    if starts_with_the {
+        name.to_string()
+    } else {
+        format!("the {name}")
     }
 }
 
@@ -444,7 +462,10 @@ impl Trackside {
         Parameters(mut args): Parameters<RaceArgs>,
     ) -> Result<CallToolResult, McpError> {
         let date = parse_date(&args.date, self.today())?;
-        args.venue = self.resolve_venue(date, &args.venue).await;
+        args.venue = match self.resolve_venue(date, &args.venue).await {
+            Ok(venue) => venue,
+            Err(ask) => return Ok(ask),
+        };
         let Some(card) = self
             .store
             .race_card(date, &args.venue, args.race_number)
@@ -558,7 +579,7 @@ impl Trackside {
                 };
                 let distance = s
                     .distance_m
-                    .map(|d| format!(" over {d} m"))
+                    .map(|d| format!(" over {d} metres"))
                     .unwrap_or_default();
                 let track = if s.condition.is_empty() {
                     String::new()
@@ -633,7 +654,10 @@ impl Trackside {
         Parameters(mut args): Parameters<RaceArgs>,
     ) -> Result<CallToolResult, McpError> {
         let date = parse_date(&args.date, self.today())?;
-        args.venue = self.resolve_venue(date, &args.venue).await;
+        args.venue = match self.resolve_venue(date, &args.venue).await {
+            Ok(venue) => venue,
+            Err(ask) => return Ok(ask),
+        };
         let Some(card) = self
             .store
             .race_card(date, &args.venue, args.race_number)
@@ -655,16 +679,23 @@ impl Trackside {
                 d[..1].make_ascii_uppercase();
                 format!("{d}.")
             });
-        // Contenders on form: most wins in the last-10 string, ties broken by rating.
+        // Recent form: most wins in the last-10 string first, ties broken by rating. Only a
+        // runner with a start and a win on that string has form to speak of; a first-starter
+        // never hears "0 wins in its last 0 starts".
         let mut ranked: Vec<_> = card.runners.iter().filter(|r| !r.scratched).collect();
         ranked.sort_by(|a, b| {
             let wa = a.last10.matches('1').count();
             let wb = b.last10.matches('1').count();
             wb.cmp(&wa).then(b.rating.cmp(&a.rating))
         });
-        let contenders = ranked
+        let formed: Vec<_> = ranked
             .iter()
+            .filter(|r| r.last10.chars().any(|c| c.is_ascii_digit()) && r.last10.contains('1'))
             .take(3)
+            .copied()
+            .collect();
+        let form_words = formed
+            .iter()
             .map(|r| {
                 let wins = r.last10.matches('1').count();
                 format!(
@@ -679,10 +710,15 @@ impl Trackside {
         let styles = self.run_styles(&card).await;
         let pace = pace_sentence(&styles);
         let title = race_title(&card, &args.venue);
-        let template = format!(
-            "{title}: {why} Track is {track}. The strongest recent form belongs to {}.{pace}",
-            spoken_list(&contenders)
-        );
+        let form_sentence = if form_words.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " The strongest recent form belongs to {}.",
+                spoken_list(&form_words)
+            )
+        };
+        let template = format!("{title}: {why} Track is {track}.{form_sentence}{pace}");
         // Bedrock gets the same facts the template uses, plus the field, and nothing else.
         let facts = json!({
             "race": title, "venue": args.venue, "date": date.format("%A %-d %B").to_string(),
@@ -690,7 +726,7 @@ impl Trackside {
             "class": card.class, "prize_total": prize_total(&card.prize).map(spoken_money),
             "why_it_matters": why, "track_condition": track,
             "feature_race": feature.is_some(),
-            "strongest_recent_form": ranked.iter().take(3).map(|r| json!({
+            "strongest_recent_form": formed.iter().map(|r| json!({
                 "horse": r.horse, "wins_in_recent_starts": r.last10.matches('1').count(),
                 "recent_starts": r.last10.chars().filter(|c| c.is_ascii_digit()).count(),
                 "jockey": r.jockey, "trainer": r.trainer, "barrier": r.barrier,
@@ -711,7 +747,7 @@ impl Trackside {
         let spoken = format!("{explanation} Source: {SOURCE_RACING_AUSTRALIA}.");
         Ok(answer(
             spoken,
-            json!({ "found": true, "race": card.name, "why": why, "contenders": ranked.iter().take(3).map(|r| r.horse.clone()).collect::<Vec<_>>(), "explanation": explanation, "written_by": written_by, "facts": facts, "source": SOURCE_RACING_AUSTRALIA }),
+            json!({ "found": true, "race": title, "why": why, "strongest_recent_form": formed.iter().map(|r| r.horse.clone()).collect::<Vec<_>>(), "explanation": explanation, "written_by": written_by, "facts": facts, "source": SOURCE_RACING_AUSTRALIA }),
         ))
     }
 
@@ -727,7 +763,10 @@ impl Trackside {
         Parameters(mut args): Parameters<RaceArgs>,
     ) -> Result<CallToolResult, McpError> {
         let date = parse_date(&args.date, self.today())?;
-        args.venue = self.resolve_venue(date, &args.venue).await;
+        args.venue = match self.resolve_venue(date, &args.venue).await {
+            Ok(venue) => venue,
+            Err(ask) => return Ok(ask),
+        };
         let Some(result) = self
             .store
             .race_result(date, &args.venue, args.race_number)
@@ -1027,10 +1066,12 @@ impl Trackside {
                 let Some(form) = self.store.horse_form(horse).await.map_err(internal)? else {
                     continue;
                 };
+                // From the day of the last check itself: a race run that day may have had
+                // no result when the listener asked.
                 let mut runs: Vec<_> = form
                     .starts
                     .iter()
-                    .filter(|s| s.date > since && s.date < date)
+                    .filter(|s| s.date >= since && s.date < date)
                     .collect();
                 runs.sort_by_key(|s| s.date);
                 for s in runs {
@@ -1275,11 +1316,32 @@ impl Trackside {
     }
 
     /// The venue as the day's meetings name it: as said when it matches one, otherwise the
-    /// one that sounds like it ("Cofield" is Caulfield). Unchanged when nothing does.
-    async fn resolve_venue(&self, date: NaiveDate, heard: &str) -> String {
+    /// one that sounds like it ("Cofield" is Caulfield). Unchanged when nothing does. When
+    /// two meetings answer to the word ("Warwick" on a day Warwick Farm and Warwick both
+    /// race), the error is the answer that asks which one, rather than a guess.
+    async fn resolve_venue(&self, date: NaiveDate, heard: &str) -> Result<String, CallToolResult> {
         let meetings = self.store.meetings(date).await.unwrap_or_default();
-        if meetings.iter().any(|m| venue_matches(&m.venue, heard)) {
-            return heard.to_string();
+        let matched = distinct(
+            meetings
+                .iter()
+                .filter(|m| venue_matches(&m.venue, heard))
+                .map(|m| m.venue.as_str()),
+        );
+        match matched.as_slice() {
+            [] => {}
+            [_] => return Ok(heard.to_string()),
+            many => {
+                // "Warwick Farm", said in full, also matches Warwick, whose name it contains;
+                // the full name is meant. "Warwick" alone could be either, so ask.
+                let said = norm(heard);
+                let in_full = many.iter().filter(|v| norm(v) == said).count() == 1
+                    && many.iter().all(|v| norm(v).len() <= said.len());
+                return if in_full {
+                    Ok(heard.to_string())
+                } else {
+                    Err(did_you_mean(heard, many))
+                };
+            }
         }
         // A venue answers to its full name and to its leading or trailing words
         // ("Rosehill" for "Rosehill Gardens", "Murray Bridge" for "Thomas Farms RC Murray Bridge").
@@ -1292,14 +1354,15 @@ impl Trackside {
             }
         }
         let best = names::closest(heard, forms.iter().map(|(f, _)| f.as_str()), 8);
-        let venues: Vec<&str> = best
-            .iter()
-            .filter(|(_, d)| *d == best[0].1)
-            .filter_map(|(f, _)| forms.iter().find(|(x, _)| x == f).map(|(_, v)| *v))
-            .collect();
-        match venues.first() {
-            Some(v) if venues.iter().all(|x| x == v) => v.to_string(),
-            _ => heard.to_string(),
+        let venues = distinct(
+            best.iter()
+                .filter(|(_, d)| *d == best[0].1)
+                .filter_map(|(f, _)| forms.iter().find(|(x, _)| x == f).map(|(_, v)| *v)),
+        );
+        match venues.as_slice() {
+            [] => Ok(heard.to_string()),
+            [one] => Ok(one.clone()),
+            many => Err(did_you_mean(heard, many)),
         }
     }
 
@@ -1477,15 +1540,26 @@ fn did_you_mean(heard: &str, names: &[String]) -> CallToolResult {
     answer(spoken, json!({ "found": false, "did_you_mean": options }))
 }
 
+/// The names in `names`, each once, in the order first seen.
+fn distinct<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in names {
+        if !out.iter().any(|seen| seen == name) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
 /// One runner's race, for "how it was run".
 #[derive(Debug, serde::Serialize)]
-struct RunLine {
-    position: u32,
-    horse: String,
-    pos_800: Option<u32>,
-    pos_400: Option<u32>,
-    last_600_s: Option<f64>,
-    story: Option<String>,
+pub(crate) struct RunLine {
+    pub(crate) position: u32,
+    pub(crate) horse: String,
+    pub(crate) pos_800: Option<u32>,
+    pub(crate) pos_400: Option<u32>,
+    pub(crate) last_600_s: Option<f64>,
+    pub(crate) story: Option<String>,
 }
 
 /// "34.9", "35.12": seconds as they'd be read.
@@ -1495,31 +1569,53 @@ fn secs(t: f64) -> String {
 }
 
 /// A few spoken sentences on how the race unfolded: how the winner won, who ran home
-/// fastest and from where, and any placegetter that came from well back. Empty when there is
-/// neither a position at the 800 nor a sectional to go on.
-fn how_it_was_run(run: &[RunLine], fastest: Option<&SectionalHighlight>) -> String {
-    let mut said = Vec::new();
-    let fastest_is = |h: &str| fastest.is_some_and(|f| horse_key(&f.horse) == horse_key(h));
+/// fastest and from where, and any placegetter that came from well back. A sentence that
+/// speaks a last-600 time names the sectional source; a position at the 800 is Racing
+/// Australia's and stands on its own. Empty when there is neither a position at the 800 nor
+/// a sectional to go on.
+pub(crate) fn how_it_was_run(run: &[RunLine], fastest: Option<&SectionalHighlight>) -> String {
+    // Each sentence, and whether it speaks a last-600 time.
+    let mut said: Vec<(String, bool)> = Vec::new();
+    let named = |h: &str| fastest.is_some_and(|f| horse_key(&f.horse) == horse_key(h));
+    let same_time = |t: Option<f64>| {
+        fastest
+            .zip(t)
+            .is_some_and(|(f, t)| (f.last_600_s - t).abs() < 0.005)
+    };
+    // Two runs clocked at the same time are equal-fastest, whichever one the feed names.
+    let shared = run
+        .iter()
+        .filter(|r| named(&r.horse) || same_time(r.last_600_s))
+        .count()
+        > 1;
+    let label = if shared { "equal-fastest" } else { "fastest" };
     if let Some(w) = run.iter().find(|r| r.position == 1) {
         let mut parts = Vec::new();
         if let Some(story) = &w.story {
             parts.push(story.clone());
         }
-        match (fastest.filter(|_| fastest_is(&w.horse)), w.last_600_s) {
-            (Some(f), _) => parts.push(format!(
-                "ran the fastest last 600 in the race, {} seconds",
-                secs(f.last_600_s)
-            )),
-            (None, Some(t)) => parts.push(format!("ran its last 600 in {} seconds", secs(t))),
-            _ => {}
-        }
+        let winner_fastest = fastest.filter(|_| named(&w.horse) || same_time(w.last_600_s));
+        let timed = match (winner_fastest, w.last_600_s) {
+            (Some(f), _) => {
+                parts.push(format!(
+                    "ran the {label} last 600 in the race, {} seconds",
+                    secs(f.last_600_s)
+                ));
+                true
+            }
+            (None, Some(t)) => {
+                parts.push(format!("ran its last 600 in {} seconds", secs(t)));
+                true
+            }
+            _ => false,
+        };
         if !parts.is_empty() {
-            said.push(format!("{} {}", w.horse, parts.join(" and ")));
+            said.push((format!("{} {}", w.horse, parts.join(" and ")), timed));
         }
     }
-    let winner_fastest = run.iter().any(|r| r.position == 1 && fastest_is(&r.horse));
-    if let Some(f) = fastest.filter(|_| !winner_fastest) {
-        let line = run.iter().find(|r| fastest_is(&r.horse));
+    let winner_named = run.iter().any(|r| r.position == 1 && named(&r.horse));
+    if let Some(f) = fastest.filter(|_| !winner_named) {
+        let line = run.iter().find(|r| named(&r.horse));
         let tail: Vec<String> = [
             line.and_then(|r| r.pos_800)
                 .filter(|&p| p > 1)
@@ -1530,24 +1626,27 @@ fn how_it_was_run(run: &[RunLine], fastest: Option<&SectionalHighlight>) -> Stri
         .flatten()
         .collect();
         let mut sentence = format!(
-            "{} ran the fastest last 600, {} seconds",
+            "{} ran the {label} last 600, {} seconds",
             f.horse,
             secs(f.last_600_s)
         );
         if !tail.is_empty() {
             sentence.push_str(&format!(", {}", tail.join(" ")));
         }
-        said.push(sentence);
+        said.push((sentence, true));
     }
     for r in run
         .iter()
-        .filter(|r| (2..=4).contains(&r.position) && !fastest_is(&r.horse))
+        .filter(|r| (2..=4).contains(&r.position) && !named(&r.horse))
     {
         if let Some(story) = r.story.as_ref().filter(|s| s.starts_with("came from")) {
-            said.push(format!(
-                "{} {story} to run {}",
-                r.horse,
-                trackside_core::ordinal(r.position)
+            said.push((
+                format!(
+                    "{} {story} to run {}",
+                    r.horse,
+                    trackside_core::ordinal(r.position)
+                ),
+                false,
             ));
         }
     }
@@ -1557,7 +1656,11 @@ fn how_it_was_run(run: &[RunLine], fastest: Option<&SectionalHighlight>) -> Stri
     let source = fastest
         .map(|f| format!(", according to {}", f.source))
         .unwrap_or_default();
-    format!(" How it was run: {}{source}.", said.join(". "))
+    let sentences: Vec<String> = said
+        .into_iter()
+        .map(|(s, timed)| if timed { format!("{s}{source}") } else { s })
+        .collect();
+    format!(" How it was run: {}.", sentences.join(". "))
 }
 
 /// "won", "ran 3rd of 12", "ran 5th", or "ran" when the finish isn't known.

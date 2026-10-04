@@ -79,7 +79,7 @@ To serve it on your own hostname, run the script once with `TRACKSIDE_DOMAIN=mcp
 | `forget_me` | delete everything Trackside remembers about you |
 | `carnival_guide` | the 2026 Spring Racing Carnival feature races |
 
-Every tool carries a title and the MCP behaviour hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), so a host knows that `forget_me` and `unfollow_horse` delete and that the rest only read. Input schemas use only what every model provider reads (plain types, no nullable type arrays, formats or bounds), which is what MCP Inspector's schema portability check looks for.
+Every tool carries a title and the MCP behaviour hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), so a host knows that `forget_me` and `unfollow_horse` delete, that `follow_horse`, `my_stable` and `set_home_state` write the listener's profile, and that the other seven only read. Input schemas use only what every model provider reads (plain types, no nullable type arrays, formats or bounds), which is what MCP Inspector's schema portability check looks for.
 
 ## MCP App: the race card on screen
 
@@ -135,7 +135,7 @@ Production data is read, read-only, from an existing daily archive of Racing Aus
 
 Price fluctuations, dividends and pools are never read (the wire types do not declare them), and wagering brands and products are removed from race and venue names ("Sportsbet Longreach" is Longreach; "TAB ONE POOL Edward Manifold Stakes" is the Edward Manifold Stakes; a race that was nothing but a sponsor is "race 2"). Racing Australia's fields carry no grade, so Group 1 races are recognised from a list of their names (`GROUP_ONE_RACES` in `crates/trackside-ingest`), with lead-ups, trials and sponsor messages about a race left ungraded. The snapshot is not committed: the data is licensed for this use, not for redistribution, so the repository only carries the synthetic demo fixture.
 
-On AWS the same binary also runs as a scheduled Lambda (`trackside-refresh`, deployed when `HR_ENV` is set): twice a day, after the evening's results and again early with the day's final fields, it rebuilds the snapshot from a fixed start date to four days ahead, uploads it, and recycles the MCP function so new requests see it. Its role can only read the two archive buckets and write `snapshots/` in Trackside's bucket.
+On AWS the same binary also runs as a scheduled Lambda (`trackside-refresh`, deployed when `HR_ENV` is set): twice a day, after the evening's results and again early with the day's final fields, it rebuilds the snapshot from a fixed start date to four days ahead, uploads it, and recycles the MCP function so new requests see it. Its role can only read the two archive buckets, write `snapshots/` in Trackside's bucket, and update the MCP function's configuration (it touches the function description so warm instances reload the snapshot).
 
 Every hour the same function runs a health probe (`trackside-snapshot --probe` runs it locally). It checks four things:
 
