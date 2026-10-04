@@ -182,9 +182,17 @@ fi
 
 # Error paths.
 check "unknown tool is an error" "$(call place_bet '{}')" '"error" in r or r["result"].get("isError")'
-check "missing argument is a tool error" "$(call get_race_card "{\"venue\":\"$VENUE\"}")" '"error" in r or r["result"].get("isError")'
+check "missing argument is a tool error" "$(call get_race_card '{}')" '"error" in r or r["result"].get("isError")'
 check "unknown venue says not found" "$(call get_race_card "{\"venue\":\"Atlantis\",\"race_number\":1,\"date\":\"$DATE\"}")" \
   '"result" in r and r["result"]["structuredContent"]["found"] is False'
+# Races by name: no venue or race number needed.
+if [[ -n "$FIXTURE" ]]; then
+  check "explain_race finds a race by name" "$(call explain_race '{"race":"Caulfield Cup"}')" \
+    "$answered and r['result']['structuredContent']['found']"
+else
+  check "explain_race finds a race by name" "$(call explain_race "{\"race\":\"Manikato\",\"date\":\"$DATE\"}")" \
+    "$answered and r['result']['structuredContent']['found']"
+fi
 check "bad date is rejected" "$(call list_meetings '{"date":"27/09/2026"}')" '"error" in r or r["result"].get("isError")'
 check "unknown method is -32601" "$(rpc '{"jsonrpc":"2.0","id":9,"method":"nope"}')" 'r["error"]["code"] == -32601'
 

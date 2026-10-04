@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use chrono::{DateTime, Days, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, Days, NaiveDate, Utc};
 use rmcp::{
     handler::server::wrapper::Parameters, model::*, schemars, service::RequestContext, tool,
     tool_handler, tool_router, ErrorData as McpError, RoleServer, ServerHandler,
@@ -13,8 +13,9 @@ use serde_json::json;
 
 use trackside_core::{
     engagements_in, horse_key, looks_like_track_code, norm, prize_total, run_style, spoken_money,
-    spring_carnival_2026, venue_matches, Engagement, Meeting, RaceCard, Record, RunStyle,
-    SectionalHighlight, Store, SOURCE_RACING_AUSTRALIA, SOURCE_SECTIONALS,
+    spring_carnival_2026, venue_matches, Engagement, FeatureRace, Meeting, NameMatch, RaceCard,
+    RaceRef, Record, RunStyle, SectionalHighlight, Store, SOURCE_RACING_AUSTRALIA,
+    SOURCE_SECTIONALS,
 };
 
 use trackside_core::{names, HorseForm};
@@ -64,11 +65,16 @@ pub struct DateArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct RaceArgs {
-    /// Venue name, e.g. "Caulfield" or "Flemington".
-    pub venue: String,
-    /// Race number on the card, e.g. 8.
-    pub race_number: u32,
-    /// Date as YYYY-MM-DD. Defaults to today in Australia/Melbourne.
+    /// The race's name as the listener said it, e.g. "Caulfield Cup" or "the Epsom". Give
+    /// this, or a venue and race number.
+    pub race: Option<String>,
+    /// Venue name, e.g. "Caulfield" or "Flemington". With race_number, names the race;
+    /// with race, narrows a name to that venue.
+    pub venue: Option<String>,
+    /// Race number on the card, e.g. 8. Needed with venue when no race name is given.
+    pub race_number: Option<u32>,
+    /// Date as YYYY-MM-DD. Defaults to today in Australia/Melbourne; with a race name, the
+    /// days around today unless a date is given.
     pub date: Option<String>,
 }
 
@@ -544,27 +550,32 @@ impl Trackside {
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false),
         input_schema = portable::<RaceArgs>(),
         meta = app_meta(),
-        description = "The race card for one race: name, distance, class, prize and the full field with barriers, jockeys, trainers and weights. Use for 'who is running in race 8 at Caulfield'."
+        description = "The race card for one race: name, distance, class, prize and the full field with barriers, jockeys, trainers and weights. A race can be asked for by name (race), or by venue and race number. Use for 'who is running in the Caulfield Cup' or 'who is running in race 8 at Caulfield'."
     )]
     async fn get_race_card(
         &self,
         ctx: RequestContext<RoleServer>,
-        Parameters(mut args): Parameters<RaceArgs>,
+        Parameters(args): Parameters<RaceArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let date = parse_date(&args.date, self.today())?;
-        args.venue = match self.resolve_venue(date, &args.venue).await {
-            Ok(venue) => venue,
-            Err(ask) => return Ok(ask),
+        let RaceAt {
+            date,
+            venue,
+            race_number,
+            note,
+        } = match self.locate_race(&args, RaceTool::Card).await? {
+            Ok(at) => at,
+            Err(reply) => return Ok(reply),
         };
         let Some(card) = self
             .store
-            .race_card(date, &args.venue, args.race_number)
+            .race_card(date, &venue, race_number)
             .await
             .map_err(internal)?
         else {
-            return Ok(self
-                .missing_race(date, &args.venue, args.race_number, false)
-                .await);
+            return Ok(with_note(
+                &note,
+                self.missing_race(date, &venue, race_number, false).await,
+            ));
         };
         let runners = card.runners.iter().filter(|r| !r.scratched).count();
         let scratched: Vec<_> = card
@@ -580,7 +591,7 @@ impl Trackside {
             .await
             .unwrap_or_default()
             .into_iter()
-            .find(|m| venue_matches(&m.venue, &args.venue))
+            .find(|m| venue_matches(&m.venue, &venue))
             .map(|m| m.state)
             .unwrap_or_default();
         let home = self.profile(&ctx).await.home_state;
@@ -591,9 +602,9 @@ impl Trackside {
             None => ", start time to be confirmed".to_string(),
         };
         let mut spoken = format!(
-            "Race {} at {} is {}. {} runners{jump}.",
+            "{note}Race {} at {} is {}. {} runners{jump}.",
             card.race_number,
-            args.venue,
+            venue,
             named_race(&card),
             runners
         );
@@ -630,7 +641,7 @@ impl Trackside {
             .collect();
         Ok(answer(
             spoken,
-            json!({ "found": true, "date": date, "venue": args.venue, "source": SOURCE_RACING_AUSTRALIA, "card": card, "jump": start.json(), "run_styles": styles }),
+            json!({ "found": true, "date": date, "venue": venue, "source": SOURCE_RACING_AUSTRALIA, "card": card, "jump": start.json(), "run_styles": styles }),
         ))
     }
 
@@ -647,7 +658,9 @@ impl Trackside {
     ) -> Result<CallToolResult, McpError> {
         let (form, heard_as) = match self.find_horse(&args.horse).await? {
             HorseLookup::Found(form, heard_as) => (form, heard_as),
-            HorseLookup::Unsure(names) => return Ok(did_you_mean(&args.horse, &names)),
+            HorseLookup::Unsure(names) => {
+                return Ok(self.horse_did_you_mean(&args.horse, &names).await)
+            }
             HorseLookup::Missing => {
                 return Ok(answer(
                     format!("I don't have form on file for {}.", args.horse),
@@ -749,26 +762,31 @@ impl Trackside {
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false),
         input_schema = portable::<RaceArgs>(),
         meta = app_meta(),
-        description = "Explain a race in plain language for a newcomer: what it is, why it matters and which runners bring the strongest form. No betting or prices. Use for 'tell me about the Caulfield Cup' or 'explain race 8'. Given only a race's name, find its venue, date and race number with list_meetings first."
+        description = "Explain a race in plain language for a newcomer: what it is, why it matters and which runners bring the strongest form. No betting or prices. Use for 'tell me about the Caulfield Cup' or 'explain race 8 at Flemington'. A race can be asked for by name (race), or by venue and race number."
     )]
     async fn explain_race(
         &self,
-        Parameters(mut args): Parameters<RaceArgs>,
+        Parameters(args): Parameters<RaceArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let date = parse_date(&args.date, self.today())?;
-        args.venue = match self.resolve_venue(date, &args.venue).await {
-            Ok(venue) => venue,
-            Err(ask) => return Ok(ask),
+        let RaceAt {
+            date,
+            venue,
+            race_number,
+            note,
+        } = match self.locate_race(&args, RaceTool::Explain).await? {
+            Ok(at) => at,
+            Err(reply) => return Ok(reply),
         };
         let Some(card) = self
             .store
-            .race_card(date, &args.venue, args.race_number)
+            .race_card(date, &venue, race_number)
             .await
             .map_err(internal)?
         else {
-            return Ok(self
-                .missing_race(date, &args.venue, args.race_number, false)
-                .await);
+            return Ok(with_note(
+                &note,
+                self.missing_race(date, &venue, race_number, false).await,
+            ));
         };
         let feature = spring_carnival_2026()
             .into_iter()
@@ -808,10 +826,10 @@ impl Trackside {
                 )
             })
             .collect::<Vec<_>>();
-        let track = self.track_condition(date, &args.venue).await;
+        let track = self.track_condition(date, &venue).await;
         let styles = self.run_styles(&card).await;
         let pace = pace_sentence(&styles);
-        let title = race_title(&card, &args.venue);
+        let title = race_title(&card, &venue);
         let form_sentence = if form_words.is_empty() {
             String::new()
         } else {
@@ -823,7 +841,7 @@ impl Trackside {
         let template = format!("{title}: {why} Track is {track}.{form_sentence}{pace}");
         // Bedrock gets the same facts the template uses, plus the field, and nothing else.
         let facts = json!({
-            "race": title, "venue": args.venue, "date": date.format("%A %-d %B").to_string(),
+            "race": title, "venue": venue, "date": date.format("%A %-d %B").to_string(),
             "race_number": card.race_number, "distance_m": card.distance_m, "grade": card.grade,
             "class": card.class, "prize_total": prize_total(&card.prize).map(spoken_money),
             "why_it_matters": why, "track_condition": track,
@@ -846,7 +864,7 @@ impl Trackside {
                 }
             },
         };
-        let spoken = format!("{explanation} Source: {SOURCE_RACING_AUSTRALIA}.");
+        let spoken = format!("{note}{explanation} Source: {SOURCE_RACING_AUSTRALIA}.");
         Ok(answer(
             spoken,
             json!({ "found": true, "race": title, "why": why, "strongest_recent_form": formed.iter().map(|r| r.horse.clone()).collect::<Vec<_>>(), "explanation": explanation, "written_by": written_by, "facts": facts, "source": SOURCE_RACING_AUSTRALIA }),
@@ -858,26 +876,31 @@ impl Trackside {
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false),
         input_schema = portable::<RaceArgs>(),
         meta = app_meta(),
-        description = "The result of a race: placings, margins, winning time and the fastest last 600 metres from sectional timing. Use for 'who won race 7 at Flemington' or 'who ran the fastest last 600'."
+        description = "The result of a race: placings, margins, winning time and the fastest last 600 metres from sectional timing. Use for 'who won race 7 at Flemington', 'who won the Caulfield Cup' or 'who ran the fastest last 600'. A race can be asked for by name (race), or by venue and race number."
     )]
     async fn race_result(
         &self,
-        Parameters(mut args): Parameters<RaceArgs>,
+        Parameters(args): Parameters<RaceArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let date = parse_date(&args.date, self.today())?;
-        args.venue = match self.resolve_venue(date, &args.venue).await {
-            Ok(venue) => venue,
-            Err(ask) => return Ok(ask),
+        let RaceAt {
+            date,
+            venue,
+            race_number,
+            note,
+        } = match self.locate_race(&args, RaceTool::Result).await? {
+            Ok(at) => at,
+            Err(reply) => return Ok(reply),
         };
         let Some(result) = self
             .store
-            .race_result(date, &args.venue, args.race_number)
+            .race_result(date, &venue, race_number)
             .await
             .map_err(internal)?
         else {
-            return Ok(self
-                .missing_race(date, &args.venue, args.race_number, true)
-                .await);
+            return Ok(with_note(
+                &note,
+                self.missing_race(date, &venue, race_number, true).await,
+            ));
         };
         // Voice reads the placegetters; the full finishing order stays in structured content.
         let placings = result
@@ -919,7 +942,7 @@ impl Trackside {
         }
         let story = how_it_was_run(&run, result.fastest_last_600.as_ref());
         let spoken = format!(
-            "Race {} at {} on {}: {placings}.{} Time {}.{story} Source: {SOURCE_RACING_AUSTRALIA}.",
+            "{note}Race {} at {} on {}: {placings}.{} Time {}.{story} Source: {SOURCE_RACING_AUSTRALIA}.",
             result.race_number,
             result.venue,
             date.format("%-d %B"),
@@ -1021,7 +1044,7 @@ impl Trackside {
     ) -> Result<CallToolResult, McpError> {
         let (form, heard_as) = match self.find_horse(args.horse.trim()).await? {
             HorseLookup::Found(form, heard_as) => (form, heard_as),
-            HorseLookup::Unsure(names) => return Ok(did_you_mean(&args.horse, &names)),
+            HorseLookup::Unsure(names) => return Ok(self.horse_did_you_mean(&args.horse, &names).await),
             HorseLookup::Missing => return Ok(answer(
                 format!("I can't find a horse called {} in the form guide, so I haven't added it. Check the spelling, or ask me who's running in a race.", args.horse.trim()),
                 json!({ "found": false }),
@@ -1674,8 +1697,8 @@ impl Trackside {
         })
     }
 
-    /// The venue as the day's meetings name it: as said when it matches one, otherwise the
-    /// one that sounds like it ("Cofield" is Caulfield). Unchanged when nothing does. When
+    /// The venue as the day's meetings name it: the one meeting the word matches, otherwise
+    /// the one that sounds like it ("Cofield" is Caulfield). Unchanged when nothing does. When
     /// two meetings answer to the word ("Warwick" on a day Warwick Farm and Warwick both
     /// race), the error is the answer that asks which one, rather than a guess.
     async fn resolve_venue(&self, date: NaiveDate, heard: &str) -> Result<String, CallToolResult> {
@@ -1688,7 +1711,8 @@ impl Trackside {
         );
         match matched.as_slice() {
             [] => {}
-            [_] => return Ok(heard.to_string()),
+            // The meeting's own name: "Warwick" is Warwick Farm on a day only it races.
+            [one] => return Ok(one.clone()),
             many => {
                 // "Warwick Farm", said in full, also matches Warwick, whose name it contains;
                 // the full name is meant. "Warwick" alone could be either, so ask.
@@ -1941,17 +1965,35 @@ fn heard_note(heard_as: &Option<String>, name: &str) -> String {
 }
 
 fn did_you_mean(heard: &str, names: &[String]) -> CallToolResult {
-    let options: Vec<String> = names.to_vec();
+    let options: Vec<(String, String)> = names.iter().map(|n| (n.clone(), String::new())).collect();
+    did_you_mean_with(heard, &options)
+}
+
+/// "Did you mean" with a fact that tells each name apart, written to follow the name as
+/// spoken (", trained by C. Trainer" or " at Caulfield on Saturday 17 October"). Names
+/// with facts are set apart by ", or" so the last fact doesn't run into the next name.
+fn did_you_mean_with(heard: &str, options: &[(String, String)]) -> CallToolResult {
+    let names: Vec<String> = options.iter().map(|(n, _)| n.clone()).collect();
+    let said: Vec<String> = options.iter().map(|(n, f)| format!("{n}{f}")).collect();
+    let with_facts = options.iter().any(|(_, f)| !f.is_empty());
+    let last_join = if with_facts { ", or " } else { " or " };
     let spoken = format!(
         "I couldn't place {}. Did you mean {}?",
         heard.trim(),
-        match options.as_slice() {
+        match said.as_slice() {
             [one] => one.clone(),
-            [init @ .., last] => format!("{} or {last}", init.join(", ")),
+            [init @ .., last] => format!("{}{last_join}{last}", init.join(", ")),
             [] => String::new(),
         }
     );
-    answer(spoken, json!({ "found": false, "did_you_mean": options }))
+    let mut structured = json!({ "found": false, "did_you_mean": names });
+    if with_facts {
+        structured["facts"] = json!(options
+            .iter()
+            .map(|(_, f)| f.trim_start_matches(", ").trim())
+            .collect::<Vec<_>>());
+    }
+    answer(spoken, structured)
 }
 
 /// The names in `names`, each once, in the order first seen.
@@ -2786,4 +2828,388 @@ fn carnival_words(statuses: &[FeatureStatus], today: NaiveDate) -> String {
 
 fn word_count(text: &str) -> usize {
     text.split_whitespace().count()
+}
+
+/// `reply` with `note` ("Taking Warwick as Warwick Farm. ") said before it.
+fn with_note(note: &str, mut reply: CallToolResult) -> CallToolResult {
+    if let Some(ContentBlock::Text(t)) = reply.content.first_mut() {
+        t.text.insert_str(0, note);
+    }
+    reply
+}
+
+/// Which race tool is asking, for the words of an answer from the carnival guide.
+#[derive(Clone, Copy, PartialEq)]
+enum RaceTool {
+    Card,
+    Explain,
+    Result,
+}
+
+/// Where a race is, found by its name or by venue and number, and what to say first about
+/// how it was taken ("Taking Warwick as Warwick Farm. "); empty when it was said as named.
+struct RaceAt {
+    date: NaiveDate,
+    venue: String,
+    race_number: u32,
+    note: String,
+}
+
+/// How many days back a race name is looked for in the fields; ahead, the fields reach
+/// `LOOK_AHEAD_DAYS`.
+const NAME_LOOK_BACK_DAYS: u64 = 7;
+
+/// A race a name might mean: one in the published fields, or a carnival feature whose
+/// field isn't out (or isn't held).
+enum RaceCandidate {
+    Field(RaceRef),
+    Carnival(FeatureRace, NameMatch),
+}
+
+impl RaceCandidate {
+    fn name(&self) -> &str {
+        match self {
+            Self::Field(r) => &r.name,
+            Self::Carnival(f, _) => f.name,
+        }
+    }
+
+    fn date(&self) -> NaiveDate {
+        match self {
+            Self::Field(r) => r.date,
+            Self::Carnival(f, _) => f.date,
+        }
+    }
+
+    fn venue(&self) -> &str {
+        match self {
+            Self::Field(r) => &r.venue,
+            Self::Carnival(f, _) => f.venue,
+        }
+    }
+
+    fn matched(&self) -> NameMatch {
+        match self {
+            Self::Field(r) => r.matched,
+            Self::Carnival(_, m) => *m,
+        }
+    }
+
+    fn graded(&self) -> bool {
+        match self {
+            Self::Field(r) => !r.grade.trim().is_empty(),
+            Self::Carnival(f, _) => !f.grade.is_empty(),
+        }
+    }
+
+    /// The closest name, then a graded race, then the day nearest `around`; a field before
+    /// the guide's entry for the same race.
+    fn rank(&self, around: NaiveDate) -> (NameMatch, bool, i64, bool) {
+        (
+            self.matched(),
+            !self.graded(),
+            (self.date() - around).num_days().abs(),
+            matches!(self, Self::Carnival(..)),
+        )
+    }
+
+    /// " at Caulfield on Saturday 17 October": what tells two races apart in "did you mean".
+    fn where_and_when(&self) -> String {
+        format!(
+            " at {} on {}",
+            self.venue(),
+            self.date().format("%A %-d %B")
+        )
+    }
+}
+
+/// What a race name came to.
+enum RaceLookup {
+    At(RaceAt),
+    /// An answer in itself: a question, a "did you mean", or a carnival race without a field.
+    Reply(CallToolResult),
+    /// No race by that name; the answer that says so.
+    Missing(CallToolResult),
+}
+
+impl Trackside {
+    /// The race a race tool was asked about: by name when `race` is given (narrowed by
+    /// venue and date when those are given too), otherwise by venue and race number. The
+    /// inner error is an answer to give instead; the outer one a call that names no race.
+    async fn locate_race(
+        &self,
+        args: &RaceArgs,
+        tool: RaceTool,
+    ) -> Result<Result<RaceAt, CallToolResult>, McpError> {
+        let asked_date = parse_opt_date(&args.date)?;
+        let venue = args
+            .venue
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+        let heard = args
+            .race
+            .as_deref()
+            .map(str::trim)
+            .filter(|r| !r.is_empty());
+        let mut missing = None;
+        if let Some(heard) = heard {
+            match self.resolve_race(heard, asked_date, venue, tool).await? {
+                RaceLookup::At(at) => return Ok(Ok(at)),
+                RaceLookup::Reply(reply) => return Ok(Err(reply)),
+                RaceLookup::Missing(reply) => missing = Some(reply),
+            }
+        }
+        let (Some(venue), Some(race_number)) = (venue, args.race_number) else {
+            // A name that found nothing, with no venue and number to fall back on.
+            if let Some(reply) = missing {
+                return Ok(Err(reply));
+            }
+            return Err(McpError::invalid_params(
+                "Say which race: give its name as race (for example \"Caulfield Cup\"), or give venue and race_number.",
+                None,
+            ));
+        };
+        let date = asked_date.unwrap_or_else(|| self.today());
+        let resolved = match self.resolve_venue(date, venue).await {
+            Ok(v) => v,
+            Err(ask) => return Ok(Err(ask)),
+        };
+        let note = if norm(&resolved) == norm(venue) {
+            String::new()
+        } else {
+            format!("Taking {venue} as {resolved}. ")
+        };
+        Ok(Ok(RaceAt {
+            date,
+            venue: resolved,
+            race_number,
+            note,
+        }))
+    }
+
+    /// A race by the name a listener said, across the fields from a week ago to as far
+    /// ahead as fields go (or on `date` alone), and the carnival guide. An exact name wins,
+    /// then a graded race, then the day nearest today; two different races that fit as well
+    /// as each other are asked about, and generic words alone ("the Cup") are a question.
+    async fn resolve_race(
+        &self,
+        heard: &str,
+        date: Option<NaiveDate>,
+        venue: Option<&str>,
+        tool: RaceTool,
+    ) -> Result<RaceLookup, McpError> {
+        let today = self.today();
+        if names::is_generic_race_name(heard) && date.is_none() && venue.is_none() {
+            let word = horse_key(heard)
+                .split_whitespace()
+                .rfind(|w| !matches!(*w, "the" | "a"))
+                .unwrap_or("race")
+                .to_string();
+            return Ok(RaceLookup::Reply(answer(
+                format!("Which {word}? Say the venue or the day."),
+                json!({ "found": false, "race": heard, "question": "which_race" }),
+            )));
+        }
+        let around = date.unwrap_or(today);
+        let window = match date {
+            Some(d) => d..=d,
+            None => {
+                today
+                    .checked_sub_days(Days::new(NAME_LOOK_BACK_DAYS))
+                    .unwrap_or(today)
+                    ..=today
+                        .checked_add_days(Days::new(LOOK_AHEAD_DAYS))
+                        .unwrap_or(today)
+            }
+        };
+        let fields = self
+            .store
+            .find_races(heard, around, window.clone())
+            .await
+            .map_err(internal)?;
+        let mut found: Vec<RaceCandidate> = Vec::new();
+        for f in spring_carnival_2026() {
+            if date.is_some_and(|d| d != f.date) {
+                continue;
+            }
+            let Some(m) = names::race_name_match(heard, f.name) else {
+                continue;
+            };
+            // The guide steps aside once the race's field is out.
+            let in_fields = fields.iter().any(|r| {
+                r.date == f.date
+                    && venue_matches(&r.venue, f.venue)
+                    && names::race_name_match(f.name, &r.name).is_some()
+            });
+            if !in_fields {
+                found.push(RaceCandidate::Carnival(f, m));
+            }
+        }
+        found.extend(fields.into_iter().map(RaceCandidate::Field));
+        if let Some(v) = venue {
+            found.retain(|c| {
+                venue_matches(c.venue(), v) || names::sounds_like(v, c.venue()).is_some()
+            });
+        }
+        found.sort_by_key(|c| c.rank(around));
+        let Some(best) = found.first().map(RaceCandidate::matched) else {
+            let spoken = match date {
+                Some(d) => format!(
+                    "I can't find a race called {heard} on {}. Say the venue and race number, or another day.",
+                    d.format("%A %-d %B")
+                ),
+                None => format!(
+                    "I can't find a race called {heard} in this week's fields or the carnival guide. Say the venue and race number, or the day it's on."
+                ),
+            };
+            return Ok(RaceLookup::Missing(answer(
+                spoken,
+                json!({ "found": false, "race": heard, "searched": { "from": window.start(), "to": window.end() } }),
+            )));
+        };
+        found.retain(|c| c.matched() == best);
+        // One candidate per race name, best placed first.
+        let mut distinct: Vec<&RaceCandidate> = Vec::new();
+        for c in &found {
+            if !distinct.iter().any(|d| norm(d.name()) == norm(c.name())) {
+                distinct.push(c);
+            }
+        }
+        let graded: Vec<&RaceCandidate> = distinct.iter().copied().filter(|c| c.graded()).collect();
+        let chosen = match (distinct.as_slice(), graded.as_slice()) {
+            ([one], _) => *one,
+            (_, [one]) => *one,
+            (many, _) => {
+                let shown = &many[..many.len().min(3)];
+                let options: Vec<(String, String)> = shown
+                    .iter()
+                    .map(|c| (with_article(c.name()), c.where_and_when()))
+                    .collect();
+                let mut reply = did_you_mean_with(heard, &options);
+                if let Some(s) = reply.structured_content.as_mut() {
+                    s["did_you_mean"] = json!(shown.iter().map(|c| c.name()).collect::<Vec<_>>());
+                    s["candidates"] = json!(shown
+                        .iter()
+                        .map(|c| json!({
+                            "name": c.name(),
+                            "venue": c.venue(),
+                            "date": c.date(),
+                            "race_number": match c {
+                                RaceCandidate::Field(r) => Some(r.race_number),
+                                RaceCandidate::Carnival(..) => None,
+                            },
+                        }))
+                        .collect::<Vec<_>>());
+                }
+                return Ok(RaceLookup::Reply(reply));
+            }
+        };
+        match chosen {
+            RaceCandidate::Field(r) => {
+                let note = if r.matched.is_exact() {
+                    String::new()
+                } else {
+                    format!(
+                        "Taking {heard} as {}{}. ",
+                        with_article(&r.name),
+                        chosen.where_and_when()
+                    )
+                };
+                Ok(RaceLookup::At(RaceAt {
+                    date: r.date,
+                    venue: r.venue.clone(),
+                    race_number: r.race_number,
+                    note,
+                }))
+            }
+            RaceCandidate::Carnival(f, _) => {
+                Ok(RaceLookup::Reply(self.carnival_answer(heard, f, tool)))
+            }
+        }
+    }
+
+    /// A carnival feature asked about before its field is out (or one this store doesn't
+    /// hold), answered from the guide: when and where, and when the field comes.
+    fn carnival_answer(&self, heard: &str, f: &FeatureRace, tool: RaceTool) -> CallToolResult {
+        let today = self.today();
+        let name = capitalise(&with_article(f.name));
+        let day = f.date.format("%A %-d %B");
+        let spoken = if f.date > today {
+            let fields = if f.date.weekday() == chrono::Weekday::Sat {
+                "on the Wednesday before"
+            } else {
+                "two to three days before"
+            };
+            match tool {
+                RaceTool::Result => {
+                    format!(
+                        "{name} is on {day} at {}, so it hasn't been run yet.",
+                        f.venue
+                    )
+                }
+                RaceTool::Card => {
+                    format!(
+                        "{name} is on {day} at {}; fields come out {fields}.",
+                        f.venue
+                    )
+                }
+                RaceTool::Explain => format!(
+                    "{name} is on {day} at {}; fields come out {fields}. {}",
+                    f.venue, f.blurb
+                ),
+            }
+        } else {
+            let when = if f.date == today {
+                "is today".to_string()
+            } else {
+                format!("was run on {day}")
+            };
+            let held = match tool {
+                RaceTool::Result => "its result",
+                RaceTool::Card | RaceTool::Explain => "its field",
+            };
+            format!(
+                "{name} {when} at {}, but I don't have {held} on file.",
+                f.venue
+            )
+        };
+        answer(
+            spoken,
+            json!({ "found": false, "race": heard, "carnival": f }),
+        )
+    }
+
+    /// "Did you mean" for horses that sound alike, each with its trainer when the store
+    /// knows every one and they differ: "Grey Area, trained by C. Trainer, or Gray Area,
+    /// trained by M. Yard".
+    async fn horse_did_you_mean(&self, heard: &str, horses: &[String]) -> CallToolResult {
+        let mut trainers = Vec::with_capacity(horses.len());
+        for h in horses {
+            let trainer = self
+                .store
+                .horse_form(h)
+                .await
+                .ok()
+                .flatten()
+                .map(|f| f.trainer.trim().to_string())
+                .unwrap_or_default();
+            trainers.push(trainer);
+        }
+        let tells_apart = trainers.iter().all(|t| !t.is_empty())
+            && distinct(trainers.iter().map(String::as_str)).len() == trainers.len();
+        let options: Vec<(String, String)> = horses
+            .iter()
+            .zip(&trainers)
+            .map(|(h, t)| {
+                let fact = if tells_apart {
+                    format!(", trained by {t}")
+                } else {
+                    String::new()
+                };
+                (h.clone(), fact)
+            })
+            .collect();
+        did_you_mean_with(heard, &options)
+    }
 }

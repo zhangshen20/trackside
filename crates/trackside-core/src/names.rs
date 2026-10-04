@@ -119,9 +119,179 @@ pub fn best<'a>(heard: &str, names: impl IntoIterator<Item = &'a str>) -> Option
     }
 }
 
+/// Words that name a kind of race rather than one race: "the Cup", "a Handicap", "the
+/// Stakes". Said alone they could be any of dozens, so Trackside asks which one.
+pub const GENERIC_RACE_WORDS: &[&str] = &[
+    "a",
+    "benchmark",
+    "bm",
+    "class",
+    "classic",
+    "cup",
+    "derby",
+    "final",
+    "group",
+    "guineas",
+    "handicap",
+    "hcp",
+    "listed",
+    "maiden",
+    "mile",
+    "novice",
+    "oaks",
+    "plate",
+    "quality",
+    "race",
+    "restricted",
+    "series",
+    "sprint",
+    "stakes",
+    "the",
+    "trophy",
+    "welter",
+];
+
+/// A race name without a leading "the": "the Caulfield Cup" and "Caulfield Cup" are one race.
+pub fn strip_the(name: &str) -> &str {
+    let name = name.trim();
+    match name.get(..4) {
+        Some(lead) if lead.eq_ignore_ascii_case("the ") => name[4..].trim_start(),
+        _ => name,
+    }
+}
+
+/// Whether a race name heard is made only of generic words ("the Handicap", "Stakes",
+/// "Maiden Plate"), so it names no race in particular.
+pub fn is_generic_race_name(heard: &str) -> bool {
+    let key = horse_key(heard);
+    !key.is_empty()
+        && key
+            .split_whitespace()
+            .all(|w| GENERIC_RACE_WORDS.contains(&w))
+}
+
+/// The words of a race name that tell it apart, generic words dropped, so "Manikato" finds
+/// the Manikato Stakes.
+fn race_core(name: &str) -> Vec<String> {
+    horse_key(strip_the(name))
+        .split_whitespace()
+        .filter(|w| !GENERIC_RACE_WORDS.contains(w))
+        .map(str::to_string)
+        .collect()
+}
+
+/// How well a heard race name matches a published one, best first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NameMatch {
+    /// The same name, apart from case, punctuation and a leading "the".
+    Exact,
+    /// The whole name sounds alike, this many sounds apart ("Cofield Cup").
+    Sound(usize),
+    /// Only the telling words sound alike, the generic ones left out ("Manikato" for the
+    /// Manikato Stakes, "Cox Plate" for a sponsor's "Sponsor Cox Plate").
+    Core(usize),
+    /// Generic words only ("the Cup"), all found in the name: fits too many races to take
+    /// without a venue or a day.
+    Words,
+}
+
+impl NameMatch {
+    pub fn is_exact(self) -> bool {
+        self == NameMatch::Exact
+    }
+}
+
+/// How `heard` matches the race called `name`, or `None` when it doesn't. The whole name's
+/// sound is tried before generic words are dropped, so "Caulfield Cup" matches the Caulfield
+/// Cup as a whole and the Caulfield Guineas only through their shared "Caulfield"; a caller
+/// keeps only the best tier it finds, and the Guineas never comes into it.
+pub fn race_name_match(heard: &str, name: &str) -> Option<NameMatch> {
+    let (h, n) = (horse_key(strip_the(heard)), horse_key(strip_the(name)));
+    if h.is_empty() || n.is_empty() {
+        return None;
+    }
+    if h == n {
+        return Some(NameMatch::Exact);
+    }
+    if let Some(d) = sounds_like(&h, &n) {
+        return Some(NameMatch::Sound(d));
+    }
+    let heard_core = race_core(heard).join(" ");
+    if heard_core.is_empty() {
+        // Generic words alone ("the Cup") fit any race whose name has them all; a caller
+        // narrows these by venue or day before taking one.
+        let name_words: Vec<&str> = n.split_whitespace().collect();
+        return h
+            .split_whitespace()
+            .filter(|w| !matches!(*w, "the" | "a"))
+            .all(|w| name_words.contains(&w))
+            .then_some(NameMatch::Words);
+    }
+    let words = race_core(name);
+    if words.is_empty() {
+        return None;
+    }
+    // The core, or its trailing words: a sponsor's name leads, the race's own name follows.
+    (0..words.len())
+        .filter_map(|i| sounds_like(&heard_core, &words[i..].join(" ")))
+        .min()
+        .map(NameMatch::Core)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn race_names_match_whole_before_their_parts() {
+        assert_eq!(
+            race_name_match("the Caulfield Cup", "Caulfield Cup"),
+            Some(NameMatch::Exact)
+        );
+        assert!(matches!(
+            race_name_match("Cofield Cup", "Caulfield Cup"),
+            Some(NameMatch::Sound(_))
+        ));
+        // Whole names that differ meet only on their telling words, a tier below.
+        assert!(matches!(
+            race_name_match("Caulfield Cup", "Caulfield Guineas"),
+            Some(NameMatch::Core(_))
+        ));
+        assert!(
+            race_name_match("Cofield Cup", "Caulfield Cup")
+                < race_name_match("Cofield Cup", "Caulfield Guineas")
+        );
+        assert_eq!(
+            race_name_match("Manikato", "Manikato Stakes"),
+            Some(NameMatch::Core(0))
+        );
+        assert_eq!(
+            race_name_match("Cox Plate", "Sponsor Name Cox Plate"),
+            Some(NameMatch::Core(0))
+        );
+        assert_eq!(
+            race_name_match("the Cup", "Caulfield Cup"),
+            Some(NameMatch::Words)
+        );
+        assert_eq!(race_name_match("Stakes", "Caulfield Cup"), None);
+        assert_eq!(race_name_match("Epsom", "Caulfield Cup"), None);
+        assert_eq!(strip_the("The Galaxy"), "Galaxy");
+        assert_eq!(strip_the("Theodore Stakes"), "Theodore Stakes");
+        for heard in [
+            "the Handicap",
+            "the Cup",
+            "Stakes",
+            "Plate",
+            "Maiden",
+            "maiden plate",
+        ] {
+            assert!(is_generic_race_name(heard), "{heard}");
+        }
+        for heard in ["Epsom", "Caulfield Cup", "the Galaxy", ""] {
+            assert!(!is_generic_race_name(heard), "{heard}");
+        }
+    }
 
     #[test]
     fn misheard_names_sound_alike() {

@@ -1321,7 +1321,8 @@ async fn names_are_found_the_way_they_sound() {
     )
     .await;
     assert!(
-        spoken(&v).starts_with("Race 8 at Caulfield is the Caulfield Cup"),
+        spoken(&v)
+            .starts_with("Taking Cofield as Caulfield. Race 8 at Caulfield is the Caulfield Cup"),
         "{}",
         spoken(&v)
     );
@@ -2114,5 +2115,252 @@ async fn asking_for_the_cox_plate_answers_about_that_race_alone() {
     assert_eq!(
         spoken(&v),
         "The Melbourne Cup is at Flemington on Tuesday 3 November, 14 days away: the race that stops a nation. Fields aren't out yet."
+    );
+}
+
+// ---- races-by-name ----
+
+/// One tool call on `app`, answered.
+async fn ask(app: &axum::Router, tool: &str, args: Value) -> Value {
+    send(app, "POST", "/mcp", None, Some(call(tool, args)))
+        .await
+        .2
+}
+
+#[tokio::test]
+async fn a_race_can_be_asked_for_by_name() {
+    let app = app(false).await;
+    // Misheard, and with no venue, number or date: found in this week's fields, and the
+    // answer says what it was taken as.
+    let v = ask(&app, "get_race_card", json!({"race": "Cofield Cup"})).await;
+    let s = &v["result"]["structuredContent"];
+    assert_eq!(s["found"], true, "{v}");
+    assert_eq!(s["venue"], "Caulfield");
+    assert_eq!(s["date"], "2026-10-17");
+    assert_eq!(s["card"]["race_number"], 8);
+    assert!(
+        spoken(&v).starts_with(
+            "Taking Cofield Cup as the Caulfield Cup at Caulfield on Saturday 17 October. Race 8 at Caulfield is the Caulfield Cup"
+        ),
+        "{}",
+        spoken(&v)
+    );
+    // Said exactly, nothing is added.
+    for tool in ["explain_race", "get_race_card"] {
+        let v = ask(&app, tool, json!({"race": "Caulfield Cup"})).await;
+        assert_eq!(v["result"]["structuredContent"]["found"], true, "{v}");
+        assert!(!spoken(&v).contains("Taking"), "{}", spoken(&v));
+    }
+    let v = ask(&app, "explain_race", json!({"race": "the Caulfield Cup"})).await;
+    assert!(spoken(&v).starts_with("Caulfield Cup: "), "{}", spoken(&v));
+    // A date narrows the search to that day, past or ahead.
+    let v = ask(
+        &app,
+        "race_result",
+        json!({"race": "Demo Stakes", "date": "2026-09-26"}),
+    )
+    .await;
+    assert_eq!(v["result"]["structuredContent"]["found"], true, "{v}");
+    assert!(spoken(&v).starts_with("Race 7 at Flemington on 26 September"));
+    // A word two feature races share is asked about, each with where and when.
+    let v = ask(&app, "explain_race", json!({"race": "Caulfield"})).await;
+    assert!(
+        spoken(&v).ends_with("Did you mean the Caulfield Cup at Caulfield on Saturday 17 October, or the Caulfield Guineas at Caulfield on Saturday 10 October?"),
+        "{}",
+        spoken(&v)
+    );
+    assert_eq!(
+        v["result"]["structuredContent"]["did_you_mean"],
+        json!(["Caulfield Cup", "Caulfield Guineas"])
+    );
+    // A name that is nowhere says so.
+    let v = ask(&app, "get_race_card", json!({"race": "Epsom"})).await;
+    assert_eq!(v["result"]["structuredContent"]["found"], false, "{v}");
+    assert!(
+        spoken(&v).starts_with("I can't find a race called Epsom"),
+        "{}",
+        spoken(&v)
+    );
+}
+
+#[tokio::test]
+async fn a_carnival_race_without_fields_answers_from_the_guide() {
+    let app = app(false).await;
+    let v = ask(&app, "get_race_card", json!({"race": "Cox Plate"})).await;
+    assert_eq!(
+        spoken(&v),
+        "The Cox Plate is on Saturday 24 October at Moonee Valley; fields come out on the Wednesday before."
+    );
+    let s = &v["result"]["structuredContent"];
+    assert_eq!(s["found"], false);
+    assert_eq!(s["carnival"]["venue"], "Moonee Valley");
+    assert_eq!(s["carnival"]["date"], "2026-10-24");
+    let v = ask(&app, "explain_race", json!({"race": "the Cox Plate"})).await;
+    assert!(
+        spoken(&v).starts_with("The Cox Plate is on Saturday 24 October at Moonee Valley; fields come out on the Wednesday before. The weight-for-age"),
+        "{}",
+        spoken(&v)
+    );
+    let v = ask(&app, "race_result", json!({"race": "Cox Plate"})).await;
+    assert!(
+        spoken(&v).ends_with("so it hasn't been run yet."),
+        "{}",
+        spoken(&v)
+    );
+    // A feature already run that this store holds no field for.
+    let v = ask(&app, "race_result", json!({"race": "Caulfield Guineas"})).await;
+    assert_eq!(
+        spoken(&v),
+        "The Caulfield Guineas was run on Saturday 10 October at Caulfield, but I don't have its result on file."
+    );
+}
+
+#[tokio::test]
+async fn a_generic_race_word_is_a_question() {
+    let app = app(false).await;
+    for (heard, question) in [
+        ("Handicap", "Which handicap? Say the venue or the day."),
+        ("the Cup", "Which cup? Say the venue or the day."),
+        ("Stakes", "Which stakes? Say the venue or the day."),
+        ("Maiden Plate", "Which plate? Say the venue or the day."),
+    ] {
+        let v = ask(&app, "explain_race", json!({"race": heard})).await;
+        assert_eq!(spoken(&v), question, "{heard}");
+        assert_eq!(v["result"]["structuredContent"]["found"], false);
+    }
+    // With the day given, the one cup that day is meant.
+    let v = ask(
+        &app,
+        "get_race_card",
+        json!({"race": "the Cup", "date": "2026-10-17"}),
+    )
+    .await;
+    assert!(
+        spoken(&v).starts_with(
+            "Taking the Cup as the Caulfield Cup at Caulfield on Saturday 17 October. Race 8"
+        ),
+        "{}",
+        spoken(&v)
+    );
+}
+
+#[tokio::test]
+async fn no_race_and_no_venue_is_invalid_params() {
+    let app = app(false).await;
+    for tool in ["get_race_card", "explain_race", "race_result"] {
+        for args in [
+            json!({}),
+            json!({"venue": "Caulfield"}),
+            json!({"race_number": 8}),
+        ] {
+            let v = ask(&app, tool, args.clone()).await;
+            assert_eq!(v["error"]["code"], -32602, "{tool} {args}: {v}");
+            let message = v["error"]["message"].as_str().unwrap_or_default();
+            assert!(
+                message.contains("race") && message.contains("venue"),
+                "{message}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn sound_alike_horses_are_told_apart_by_trainer() {
+    let fixture: Fixture = serde_json::from_value(json!({
+        "form": [
+            { "horse": "Grey Area", "trainer": "C. Trainer" },
+            { "horse": "Gray Area", "trainer": "M. Yard" }
+        ]
+    }))
+    .unwrap();
+    let app = app_with(
+        false,
+        Arc::new(FixtureStore::from_fixture(fixture)),
+        Arc::new(InMemory::default()),
+        TEST_NOW,
+    )
+    .await;
+    for tool in ["horse_form", "follow_horse"] {
+        let v = ask(&app, tool, json!({"horse": "Grei Area"})).await;
+        assert_eq!(
+            spoken(&v),
+            "I couldn't place Grei Area. Did you mean Grey Area, trained by C. Trainer, or Gray Area, trained by M. Yard?",
+            "{tool}"
+        );
+        assert_eq!(
+            v["result"]["structuredContent"]["did_you_mean"],
+            json!(["Grey Area", "Gray Area"])
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_venue_word_says_which_venue_it_took() {
+    let fixture: Fixture = serde_json::from_value(json!({
+        "meetings": [
+            { "date": "2026-10-17", "state": "NSW", "venue": "Warwick Farm", "races": [
+                { "race_number": 1, "name": "The Galaxy", "start_local": "12:30", "distance_m": 1100, "runners": [
+                    { "number": 1, "horse": "First Timer", "jockey": "A. Rider", "trainer": "B. Yard", "barrier": 3, "last10": "" }
+                ] }
+            ] }
+        ],
+        "results": [
+            { "date": "2026-10-17", "venue": "Warwick Farm", "race_number": 1, "winning_time": "1:03.10",
+              "placings": [ { "position": 1, "number": 1, "horse": "First Timer", "jockey": "A. Rider" } ] }
+        ]
+    }))
+    .unwrap();
+    let app = app_with(
+        false,
+        Arc::new(FixtureStore::from_fixture(fixture)),
+        Arc::new(InMemory::default()),
+        TEST_NOW,
+    )
+    .await;
+    let args = json!({"venue": "Warwick", "race_number": 1, "date": "2026-10-17"});
+    for (tool, then) in [
+        ("get_race_card", "Race 1 at Warwick Farm is The Galaxy"),
+        ("explain_race", "The Galaxy: "),
+        (
+            "race_result",
+            "Race 1 at Warwick Farm on 17 October: 1st First Timer",
+        ),
+    ] {
+        let v = ask(&app, tool, args.clone()).await;
+        assert_eq!(
+            v["result"]["structuredContent"]["found"], true,
+            "{tool}: {v}"
+        );
+        assert!(
+            spoken(&v).starts_with(&format!("Taking Warwick as Warwick Farm. {then}")),
+            "{tool}: {}",
+            spoken(&v)
+        );
+    }
+    // Said in full, nothing is added.
+    let v = ask(
+        &app,
+        "get_race_card",
+        json!({"venue": "warwick farm", "race_number": 1, "date": "2026-10-17"}),
+    )
+    .await;
+    assert!(
+        spoken(&v).starts_with("Race 1 at Warwick Farm"),
+        "{}",
+        spoken(&v)
+    );
+    // A race that isn't on the card still says which venue it took.
+    let v = ask(
+        &app,
+        "get_race_card",
+        json!({"venue": "Warwick", "race_number": 5, "date": "2026-10-17"}),
+    )
+    .await;
+    assert!(
+        spoken(&v).starts_with(
+            "Taking Warwick as Warwick Farm. Warwick Farm on Saturday 17 October has "
+        ),
+        "{}",
+        spoken(&v)
     );
 }
