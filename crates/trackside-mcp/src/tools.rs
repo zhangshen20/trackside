@@ -13,8 +13,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 use trackside_core::{
-    horse_key, looks_like_track_code, prize_total, spoken_money, spring_carnival_2026,
-    venue_matches, Meeting, RaceCard, Record, Store, SOURCE_RACING_AUSTRALIA, SOURCE_SECTIONALS,
+    horse_key, looks_like_track_code, prize_total, run_style, spoken_money, spring_carnival_2026,
+    venue_matches, Meeting, RaceCard, Record, RunStyle, SectionalHighlight, Store,
+    SOURCE_RACING_AUSTRALIA, SOURCE_SECTIONALS,
 };
 
 use crate::auth::Caller;
@@ -332,9 +333,16 @@ impl Trackside {
         spoken.push_str(&format!(
             " The field: {field}. Source: {SOURCE_RACING_AUSTRALIA}."
         ));
+        // Where each runner usually settles, for screens to draw a map of the field.
+        let styles: serde_json::Map<String, serde_json::Value> = self
+            .run_styles(&card)
+            .await
+            .into_iter()
+            .filter_map(|(_, horse, st)| Some((horse, json!(st?.style))))
+            .collect();
         Ok(answer(
             spoken,
-            json!({ "found": true, "date": date, "venue": args.venue, "source": SOURCE_RACING_AUSTRALIA, "card": card }),
+            json!({ "found": true, "date": date, "venue": args.venue, "source": SOURCE_RACING_AUSTRALIA, "card": card, "run_styles": styles }),
         ))
     }
 
@@ -385,8 +393,14 @@ impl Trackside {
                 } else {
                     format!(" on a {} track", s.condition)
                 };
+                // Where it was at the 800 tells how the run unfolded.
+                let settled = match s.pos_800 {
+                    Some(1) => ", after leading at the 800".to_string(),
+                    Some(p) if p > 1 => format!(", from {} at the 800", trackside_core::ordinal(p)),
+                    _ => String::new(),
+                };
                 format!(
-                    "{}{}{distance}{track} it {}{}",
+                    "{}{}{distance}{track} it {}{}{settled}",
                     s.date.format("%-d %b"),
                     at_venue(&s.venue),
                     place,
@@ -417,15 +431,20 @@ impl Trackside {
         } else {
             format!(" Recent starts: {recent}.")
         };
+        let style = run_style(&form.starts);
+        let habit = style
+            .as_ref()
+            .map(|st| format!(" In its races it {}.", st.phrase))
+            .unwrap_or_default();
         let spoken = format!(
-            "{}, trained by {}. Career {}.{first_up}{going}{recent} Source: {SOURCE_RACING_AUSTRALIA}.",
+            "{}, trained by {}. Career {}.{first_up}{going}{habit}{recent} Source: {SOURCE_RACING_AUSTRALIA}.",
             form.horse,
             form.trainer,
             form.career.summary()
         );
         Ok(answer(
             spoken,
-            json!({ "found": true, "source": SOURCE_RACING_AUSTRALIA, "form": form }),
+            json!({ "found": true, "source": SOURCE_RACING_AUSTRALIA, "form": form, "run_style": style }),
         ))
     }
 
@@ -470,19 +489,22 @@ impl Trackside {
             .iter()
             .take(3)
             .map(|r| {
+                let wins = r.last10.matches('1').count();
                 format!(
-                    "{} ({} wins in its last {} starts)",
+                    "{} ({wins} win{} in its last {} starts)",
                     r.horse,
-                    r.last10.matches('1').count(),
+                    if wins == 1 { "" } else { "s" },
                     r.last10.chars().filter(|c| c.is_ascii_digit()).count()
                 )
             })
-            .collect::<Vec<_>>()
-            .join(", ");
+            .collect::<Vec<_>>();
         let track = self.track_condition(date, &args.venue).await;
+        let styles = self.run_styles(&card).await;
+        let pace = pace_sentence(&styles);
         let template = format!(
-            "{}: {why} Track is {track}. On recent form the ones to watch are {contenders}.",
-            card.name
+            "{}: {why} Track is {track}. The strongest recent form belongs to {}.{pace}",
+            card.name,
+            spoken_list(&contenders)
         );
         // Bedrock gets the same facts the template uses, plus the field, and nothing else.
         let facts = json!({
@@ -497,6 +519,7 @@ impl Trackside {
                 "jockey": r.jockey, "trainer": r.trainer, "barrier": r.barrier,
             })).collect::<Vec<_>>(),
             "field_size": ranked.len(),
+            "where_they_usually_settle": styles.iter().filter_map(|(_, horse, st)| st.as_ref().map(|st| json!({ "horse": horse, "past_run_style": st.phrase }))).collect::<Vec<_>>(),
         });
         let (explanation, written_by) = match &self.summariser {
             None => (template, "template".to_string()),
@@ -553,20 +576,44 @@ impl Trackside {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let sectional = result
-            .fastest_last_600
-            .as_ref()
-            .map(|s| {
-                format!(
-                    " Fastest last 600 metres: {} in {:.2} seconds, according to {}.",
-                    s.horse, s.last_600_s, s.source
-                )
-            })
-            .unwrap_or_default();
-        let spoken = format!("Race {} at {} on {}: {placings}.{} Time {}.{sectional} Source: {SOURCE_RACING_AUSTRALIA}.", result.race_number, result.venue, date.format("%-d %B"), result.track_condition.as_ref().map(|t| format!(" Track {t}.")).unwrap_or_default(), result.winning_time.clone().unwrap_or_else(|| "not recorded".into()));
+        // How the race was run: each runner's position at the 800 (from its form line, once
+        // Racing Australia publishes it) and last 600 m (sectional timing).
+        let mut run = Vec::new();
+        for p in result.placings.iter().filter(|p| p.position >= 1) {
+            let start = self
+                .store
+                .horse_form(&p.horse)
+                .await
+                .map_err(internal)?
+                .and_then(|f| f.starts.into_iter().find(|s| s.date == result.date));
+            run.push(RunLine {
+                position: p.position,
+                horse: p.horse.clone(),
+                pos_800: start.as_ref().and_then(|s| s.pos_800),
+                pos_400: start.as_ref().and_then(|s| s.pos_400),
+                last_600_s: p.last_600_s.or(start.as_ref().and_then(|s| s.last_600_s)),
+                story: start.as_ref().and_then(|s| s.run_story()),
+            });
+        }
+        let story = how_it_was_run(&run, result.fastest_last_600.as_ref());
+        let spoken = format!(
+            "Race {} at {} on {}: {placings}.{} Time {}.{story} Source: {SOURCE_RACING_AUSTRALIA}.",
+            result.race_number,
+            result.venue,
+            date.format("%-d %B"),
+            result
+                .track_condition
+                .as_ref()
+                .map(|t| format!(" Track {t}."))
+                .unwrap_or_default(),
+            result
+                .winning_time
+                .clone()
+                .unwrap_or_else(|| "not recorded".into())
+        );
         Ok(answer(
             spoken,
-            json!({ "found": true, "source": [SOURCE_RACING_AUSTRALIA, SOURCE_SECTIONALS], "result": result }),
+            json!({ "found": true, "source": [SOURCE_RACING_AUSTRALIA, SOURCE_SECTIONALS], "result": result, "run": run }),
         ))
     }
 
@@ -910,6 +957,22 @@ impl Trackside {
 }
 
 impl Trackside {
+    /// Each runner's usual run style from its form, in saddlecloth order.
+    async fn run_styles(&self, card: &RaceCard) -> Vec<(u32, String, Option<RunStyle>)> {
+        let mut out = Vec::new();
+        for r in card.runners.iter().filter(|r| !r.scratched) {
+            let style = self
+                .store
+                .horse_form(&r.horse)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|f| run_style(&f.starts));
+            out.push((r.number, r.horse.clone(), style));
+        }
+        out
+    }
+
     /// The caller's remembered profile; an empty one when memory can't be read, so a storage
     /// fault never stops a racing answer.
     async fn profile(&self, ctx: &RequestContext<RoleServer>) -> Profile {
@@ -990,6 +1053,134 @@ impl Trackside {
             .and_then(|m| m.track_condition)
             .unwrap_or_else(|| "not yet rated".into())
     }
+}
+
+/// Where the field usually settles, from past runs: " On past runs, A usually leads, and B
+/// and C usually settle back in the field." Empty when nobody's style is known.
+fn pace_sentence(styles: &[(u32, String, Option<RunStyle>)]) -> String {
+    let with = |style: &str| -> Vec<String> {
+        styles
+            .iter()
+            .filter(|(_, _, st)| st.as_ref().is_some_and(|st| st.style == style))
+            .map(|(_, h, _)| h.clone())
+            .take(3) // a sentence, not the whole field; the screen has the rest
+            .collect()
+    };
+    let (leaders, on_pace, back) = (with("leader"), with("on-pace"), with("back"));
+    let verb = |names: &[String], one: &str, many: &str| {
+        format!(
+            "{} {}",
+            spoken_list(names),
+            if names.len() == 1 { one } else { many }
+        )
+    };
+    let front = if !leaders.is_empty() {
+        verb(&leaders, "usually leads", "usually lead")
+    } else if !on_pace.is_empty() {
+        verb(
+            &on_pace,
+            "usually races on the pace",
+            "usually race on the pace",
+        )
+    } else {
+        String::new()
+    };
+    let rear = (!back.is_empty()).then(|| {
+        verb(
+            &back,
+            "usually settles back in the field",
+            "usually settle back in the field",
+        )
+    });
+    match (front.is_empty(), rear) {
+        (true, None) => String::new(),
+        (true, Some(r)) => format!(" On past runs, {r}."),
+        (false, None) => format!(" On past runs, {front}."),
+        (false, Some(r)) => format!(" On past runs, {front}, and {r}."),
+    }
+}
+
+/// One runner's race, for "how it was run".
+#[derive(Debug, serde::Serialize)]
+struct RunLine {
+    position: u32,
+    horse: String,
+    pos_800: Option<u32>,
+    pos_400: Option<u32>,
+    last_600_s: Option<f64>,
+    story: Option<String>,
+}
+
+/// "34.9", "35.12": seconds as they'd be read.
+fn secs(t: f64) -> String {
+    let s = format!("{t:.2}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// A few spoken sentences on how the race unfolded: how the winner won, who ran home
+/// fastest and from where, and any placegetter that came from well back. Empty when there is
+/// neither a position at the 800 nor a sectional to go on.
+fn how_it_was_run(run: &[RunLine], fastest: Option<&SectionalHighlight>) -> String {
+    let mut said = Vec::new();
+    let fastest_is = |h: &str| fastest.is_some_and(|f| horse_key(&f.horse) == horse_key(h));
+    if let Some(w) = run.iter().find(|r| r.position == 1) {
+        let mut parts = Vec::new();
+        if let Some(story) = &w.story {
+            parts.push(story.clone());
+        }
+        match (fastest.filter(|_| fastest_is(&w.horse)), w.last_600_s) {
+            (Some(f), _) => parts.push(format!(
+                "ran the fastest last 600 in the race, {} seconds",
+                secs(f.last_600_s)
+            )),
+            (None, Some(t)) => parts.push(format!("ran its last 600 in {} seconds", secs(t))),
+            _ => {}
+        }
+        if !parts.is_empty() {
+            said.push(format!("{} {}", w.horse, parts.join(" and ")));
+        }
+    }
+    let winner_fastest = run.iter().any(|r| r.position == 1 && fastest_is(&r.horse));
+    if let Some(f) = fastest.filter(|_| !winner_fastest) {
+        let line = run.iter().find(|r| fastest_is(&r.horse));
+        let tail: Vec<String> = [
+            line.and_then(|r| r.pos_800)
+                .filter(|&p| p > 1)
+                .map(|p| format!("from {} at the 800", trackside_core::ordinal(p))),
+            line.map(|r| format!("to finish {}", trackside_core::ordinal(r.position))),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let mut sentence = format!(
+            "{} ran the fastest last 600, {} seconds",
+            f.horse,
+            secs(f.last_600_s)
+        );
+        if !tail.is_empty() {
+            sentence.push_str(&format!(", {}", tail.join(" ")));
+        }
+        said.push(sentence);
+    }
+    for r in run
+        .iter()
+        .filter(|r| (2..=4).contains(&r.position) && !fastest_is(&r.horse))
+    {
+        if let Some(story) = r.story.as_ref().filter(|s| s.starts_with("came from")) {
+            said.push(format!(
+                "{} {story} to run {}",
+                r.horse,
+                trackside_core::ordinal(r.position)
+            ));
+        }
+    }
+    if said.is_empty() {
+        return String::new();
+    }
+    let source = fastest
+        .map(|f| format!(", according to {}", f.source))
+        .unwrap_or_default();
+    format!(" How it was run: {}{source}.", said.join(". "))
 }
 
 fn today() -> NaiveDate {

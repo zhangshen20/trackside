@@ -20,7 +20,8 @@ Use only the facts in the JSON you are given; never invent form, history or peop
 Write at most three short sentences, under 70 words, of plain speech: what the race is and why it matters, then which runners bring the strongest recent form and why. \
 No markdown, lists, symbols or abbreviations; say numbers as a person would. \
 Never mention odds, prices, betting, wagering, tips, bookmakers or who will win. \
-Describe past form only: never call a runner a chance, a contender or a favourite, or say how it might go.";
+Describe past form only: never call a runner a chance, a contender or a favourite, or say how it might go. \
+where_they_usually_settle says where runners have settled in past races; you may say that, but never predict how this race will be run.";
 
 /// Words that mean the model has drifted into betting talk; the answer is dropped.
 const BANNED: &[&str] = &[

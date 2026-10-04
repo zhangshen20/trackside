@@ -157,7 +157,92 @@ pub struct PastStart {
     pub pos_400: Option<u32>,
 }
 
+/// "1st", "2nd", "11th".
+pub fn ordinal(n: u32) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
+}
+
+/// Where a horse usually settles in its races, from its positions at the 800 m in recent
+/// starts. It describes past runs, not what will happen next time.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct RunStyle {
+    /// "leader", "on-pace", "midfield" or "back".
+    pub style: String,
+    /// "usually leads", "usually races on the pace", ...
+    pub phrase: String,
+    /// Starts the style was read from.
+    pub runs: u32,
+    /// Average position at the 800 m in those starts.
+    pub average_800: f64,
+}
+
+/// The run style from up to the last six starts with a position at the 800 m in a field of
+/// five or more; none with fewer than two such starts.
+pub fn run_style(starts: &[PastStart]) -> Option<RunStyle> {
+    let runs: Vec<(f64, f64)> = starts
+        .iter()
+        .filter(|s| !s.is_trial())
+        .filter_map(|s| {
+            let pos = s.pos_800? as f64;
+            let n = s.starters.filter(|&n| n >= 5)? as f64;
+            (pos >= 1.0 && pos <= n).then_some((pos, (pos - 1.0) / (n - 1.0)))
+        })
+        .take(6)
+        .collect();
+    if runs.len() < 2 {
+        return None;
+    }
+    let count = runs.len() as f64;
+    let average_800 = runs.iter().map(|r| r.0).sum::<f64>() / count;
+    let relative = runs.iter().map(|r| r.1).sum::<f64>() / count;
+    let (style, phrase) = if average_800 <= 1.6 || relative <= 0.1 {
+        ("leader", "usually leads or sits right on the lead")
+    } else if relative <= 0.35 {
+        ("on-pace", "usually races on the pace")
+    } else if relative <= 0.65 {
+        ("midfield", "usually settles midfield")
+    } else {
+        ("back", "usually settles back in the field and runs on")
+    };
+    Some(RunStyle {
+        style: style.into(),
+        phrase: phrase.into(),
+        runs: runs.len() as u32,
+        average_800: (average_800 * 10.0).round() / 10.0,
+    })
+}
+
 impl PastStart {
+    /// How this start was run, from its position at the 800 m and its finish: "came from
+    /// 9th at the 800", "led at the 800", "dropped back from 2nd at the 800".
+    pub fn run_story(&self) -> Option<String> {
+        let at = self.pos_800?;
+        let finish = self.finish?;
+        if at == 0 || finish == 0 {
+            return None;
+        }
+        Some(if at == 1 {
+            if finish == 1 {
+                "led at the 800 and kept going".to_string()
+            } else {
+                "led at the 800".to_string()
+            }
+        } else if at >= finish + 3 {
+            format!("came from {} at the 800", ordinal(at))
+        } else if finish >= at + 4 {
+            format!("was {} at the 800 but dropped back", ordinal(at))
+        } else {
+            format!("was {} at the 800", ordinal(at))
+        })
+    }
+
     /// Barrier trials and jump-outs are practice, not starts. Racing Australia marks most of
     /// them, but some jump-outs arrive unmarked, as class "Out - S5" on a "Jump" track.
     pub fn is_trial(&self) -> bool {
@@ -193,6 +278,8 @@ pub struct Placing {
     pub horse: String,
     pub jockey: String,
     pub margin_lengths: Option<f64>,
+    /// This runner's last 600 m in seconds, from sectional timing when available.
+    pub last_600_s: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
