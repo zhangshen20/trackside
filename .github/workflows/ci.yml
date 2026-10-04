@@ -22,6 +22,27 @@ jobs:
       - run: cargo test --workspace
       - run: python3 scripts/lint-friction.py
 
+  # The server as a client sees it: a debug build serves fixtures/demo.json the way Lambda runs
+  # (stateless, plain JSON), with its clock fixed on the Wednesday before the fixture's Caulfield
+  # Cup card, and scripts/smoke.sh speaks MCP to it. Any FAIL line fails the job.
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p trackside-mcp
+      - name: Start the server and run the smoke test
+        run: |
+          TRACKSIDE_STATELESS=1 TRACKSIDE_TODAY=2026-10-14 TRACKSIDE_FIXTURE=fixtures/demo.json \
+            TRACKSIDE_BIND=127.0.0.1:8000 target/debug/trackside-mcp >server.log 2>&1 &
+          SERVER=$!
+          trap 'kill "$SERVER" 2>/dev/null || true' EXIT
+          MCP_URL=http://127.0.0.1:8000/mcp scripts/smoke.sh --fixture --wait-for 60
+      - name: Server log
+        if: failure()
+        run: cat server.log
+
   # Standalone open-source crates kept in this repository until they move to their own.
   oss:
     runs-on: ubuntu-latest

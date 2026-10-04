@@ -3,14 +3,18 @@
 #
 #   scripts/smoke.sh                                   # the live AWS endpoint, 27 Sep data
 #   MCP_URL=http://127.0.0.1:8000/mcp scripts/smoke.sh --fixture   # local server on fixtures/demo.json
+#   MCP_URL=http://127.0.0.1:8000/mcp scripts/smoke.sh --fixture --wait-for 60
+#                                                      # same, but first wait up to 60 s for the server
 #
 # The script sends no session id, so a local server must run stateless, the way Lambda does, and
 # the fixture checks expect its clock fixed before the fixture's Caulfield Cup card:
 #   TRACKSIDE_STATELESS=1 TRACKSIDE_TODAY=2026-10-14 cargo run -p trackside-mcp
 #
-# Checks initialize, tools/list (nine tools), a call to every tool, the error paths, and that no
+# Checks initialize, tools/list (the core tools; the server has twelve), a call to ten of the
+# twelve tools (set_home_state and forget_me are left alone), the error paths, and that no
 # answer mentions betting, odds or a bookmaker. Needs bash, curl and python3. Exits non-zero on
-# any failure.
+# any failure. With --wait-for N it first polls /healthz next to MCP_URL for up to N seconds, so
+# it can be started in the same breath as the server; CI runs it that way.
 #
 # Against a server with OAuth on, pass a token with both scopes and the script also checks the
 # 401 challenge and the metadata documents:
@@ -18,7 +22,17 @@
 set -uo pipefail +B  # macOS bash 3.2 brace-expands {"a":1,"b":2} inside "$(...)"
 
 MCP_URL="${MCP_URL:-https://mcp.racingaidataset.com.au/mcp}"
-if [[ "${1:-}" == "--fixture" ]]; then
+FIXTURE="" WAIT_FOR=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --fixture) FIXTURE=1 ;;
+    --wait-for) WAIT_FOR="${2:-}"; shift ;;
+    *) echo "usage: scripts/smoke.sh [--fixture] [--wait-for SECONDS]" >&2; exit 2 ;;
+  esac
+  shift
+done
+[[ "$WAIT_FOR" =~ ^[0-9]+$ ]] || { echo "--wait-for needs a number of seconds" >&2; exit 2; }
+if [[ -n "$FIXTURE" ]]; then
   : "${DATE:=2026-10-17}" "${VENUE:=Caulfield}" "${RACE:=8}" "${HORSE:=sample stayer}"
   : "${RESULT_DATE:=2026-09-26}" "${RESULT_VENUE:=Flemington}" "${RESULT_RACE:=7}"
   : "${PERSON:=J. Example}" "${ROLE:=jockey}"
@@ -64,6 +78,15 @@ answered='"result" in r and not r["result"].get("isError") and text and not bann
 
 echo "Trackside smoke test against $MCP_URL"
 
+if (( WAIT_FOR > 0 )); then  # a server started a moment ago may not be listening yet
+  HEALTH="${MCP_URL%/mcp}/healthz" DEADLINE=$((SECONDS + WAIT_FOR))
+  until curl -sf --max-time 2 "$HEALTH" >/dev/null 2>&1; do
+    if (( SECONDS >= DEADLINE )); then echo "FAIL  $HEALTH did not answer within ${WAIT_FOR}s"; exit 1; fi
+    sleep 1
+  done
+  echo "server answered on $HEALTH after ${SECONDS}s"
+fi
+
 res=$(rpc '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}')
 check "initialize speaks 2025-11-25 with tools" "$res" \
   'r["result"]["protocolVersion"] == "2025-11-25" and "tools" in r["result"]["capabilities"]'
@@ -91,7 +114,7 @@ check "follow_horse"    "$(call follow_horse "{\"horse\":\"$HORSE\"}")" "$answer
 check "my_stable"       "$(call my_stable "{\"date\":\"$DATE\"}")" "$answered"
 # The stable looks ahead (fixture only; the server must run with TRACKSIDE_TODAY=2026-10-14, the
 # Wednesday before the fixture's Caulfield Cup, or any real day before it).
-if [[ "${1:-}" == "--fixture" ]]; then
+if [[ -n "$FIXTURE" ]]; then
   check "my_stable names the next run" "$(call my_stable '{"date":"2026-10-14"}')" \
     "$answered and 'runs on Saturday in the Caulfield Cup' in text and r['result']['structuredContent']['upcoming'][0]['race_number'] == 8"
 fi
