@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en-AU"><head><meta charset="utf-8"><title>Under the hood</title><link rel="stylesheet" href="style.css">
+<style>
+  body { justify-content: flex-start; padding-top: 64px; }
+  .kicker { margin-bottom: 10px; }
+  h2 { font-size: 72px; }
+  .services { font-size: 26px; color: var(--muted); margin-top: 16px; }
+  svg { margin-top: 10px; transform: scale(0.9); transform-origin: top center; }
+  .box { fill: #18212d; stroke: #263244; stroke-width: 2; rx: 18; }
+  .box.hot { stroke: #2fd0ff; }
+  .box.mem { stroke: #43d19e; }
+  .t { fill: #e8eef5; font-size: 34px; font-weight: 700; text-anchor: middle; }
+  .m { fill: #93a2b5; font-size: 23px; text-anchor: middle; }
+  .lbl { fill: #2fd0ff; font-size: 23px; font-weight: 600; text-anchor: middle; }
+  .arrow { stroke: #93a2b5; stroke-width: 3; fill: none; marker-end: url(#head); }
+  .arrow.hot { stroke: #2fd0ff; }
+  .arrow.dash { stroke-dasharray: 10 8; }
+</style></head>
+<body>
+  <div class="kicker">Under the hood</div>
+  <h2>One CloudFormation stack, all Rust, open source</h2>
+  <div class="services">Lambda · API Gateway · Cognito · S3 · DynamoDB · EventBridge Scheduler · Bedrock · Polly · ACM · Route 53</div>
+  <svg width="1800" height="720" viewBox="0 0 1800 720">
+    <defs><marker id="head" markerWidth="12" markerHeight="12" refX="9" refY="6" orient="auto"><path d="M0,0 L12,6 L0,12 z" fill="#93a2b5"/></marker></defs>
+
+    <!-- Row 1: the request path -->
+    <rect class="box" x="40" y="90" width="320" height="150"/>
+    <text class="t" x="200" y="152">Alexa+</text>
+    <text class="m" x="200" y="190">voice in, speech out</text>
+    <text class="m" x="200" y="220">(simulated in this demo)</text>
+
+    <path class="arrow hot" d="M360,165 L660,165"/>
+    <text class="lbl" x="510" y="120">MCP 2025-11-25</text>
+    <text class="lbl" x="510" y="150">Streamable HTTP</text>
+    <text class="lbl" x="510" y="205">OAuth 2.1 + PKCE</text>
+
+    <rect class="box hot" x="670" y="90" width="330" height="150"/>
+    <text class="t" x="835" y="152">API Gateway</text>
+    <text class="m" x="835" y="190">HTTP API · custom domain</text>
+    <text class="m" x="835" y="220">mcp.racingaidataset.com.au</text>
+
+    <path class="arrow hot" d="M1000,165 L1150,165"/>
+
+    <rect class="box hot" x="1160" y="70" width="600" height="190"/>
+    <text class="t" x="1460" y="135">Lambda · arm64 · Rust</text>
+    <text class="m" x="1460" y="175">axum + rmcp · 13 tools · stateless</text>
+    <text class="m" x="1460" y="205">serves the race-card MCP App (ui://)</text>
+    <text class="m" x="1460" y="235">Bedrock rewords race explanations</text>
+
+    <!-- Row 2: what the server leans on -->
+    <path class="arrow" d="M835,240 L835,360"/>
+    <rect class="box" x="670" y="370" width="330" height="150"/>
+    <text class="t" x="835" y="432">Cognito</text>
+    <text class="m" x="835" y="470">code + PKCE for people</text>
+    <text class="m" x="835" y="500">client credentials for discovery</text>
+
+    <path class="arrow" d="M1300,260 L1300,360"/>
+    <rect class="box" x="1160" y="370" width="280" height="150"/>
+    <text class="t" x="1300" y="432">S3 snapshot</text>
+    <text class="m" x="1300" y="470">meetings, form,</text>
+    <text class="m" x="1300" y="500">results, sectionals</text>
+
+    <path class="arrow" d="M1615,260 L1615,360"/>
+    <rect class="box mem" x="1470" y="370" width="290" height="150"/>
+    <text class="t" x="1615" y="432">DynamoDB</text>
+    <text class="m" x="1615" y="470">listener memory</text>
+    <text class="m" x="1615" y="500">stable · home state · last check</text>
+
+    <!-- Row 3: the data pipeline -->
+    <path class="arrow dash" d="M1300,600 L1300,530"/>
+    <rect class="box" x="1000" y="610" width="760" height="100"/>
+    <text class="t" x="1380" y="652">Racing Australia archive → snapshot Lambda</text>
+    <text class="m" x="1380" y="690">read-only S3 · EventBridge Scheduler, twice a day · prices never read</text>
+
+    <!-- The simulator, beside Alexa+ -->
+    <path class="arrow dash" d="M200,240 L200,360"/>
+    <rect class="box" x="40" y="370" width="320" height="190"/>
+    <text class="t" x="200" y="432">Simulator · Lambda</text>
+    <text class="m" x="200" y="470">Claude Haiku 4.5 on Bedrock</text>
+    <text class="m" x="200" y="500">plays Alexa+ and picks the tools</text>
+    <text class="m" x="200" y="530">Polly "Olivia" speaks the answers</text>
+  </svg>
+  <div class="corner-right" style="bottom: 150px">MIT · github.com/zhangshen20/trackside</div>
+</body></html>
