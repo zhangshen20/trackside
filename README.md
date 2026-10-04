@@ -15,7 +15,7 @@ Ask Alexa+ what racing is on, who is in the Caulfield Cup, how a horse has been 
 crates/trackside-core   domain model (odds-free) and the Store trait; JSON fixture store
 crates/trackside-ingest parsers for the archived fields, form, results and sectionals, and the snapshot builder (prices and bookmaker names dropped)
 crates/trackside-snapshot  CLI and scheduled Lambda: build a snapshot from the S3 archive (read-only) and publish it to Trackside's bucket
-crates/trackside-mcp    the MCP server: 12 tools over axum + rmcp; runs locally or on AWS Lambda
+crates/trackside-mcp    the MCP server: 13 tools over axum + rmcp; runs locally or on AWS Lambda
 crates/trackside-sim    the simulator: a web page plus a server where Claude on Amazon Bedrock drives the MCP server
 fixtures/demo.json      a small demo fixture (synthetic names) for tests and local runs
 deploy/                 CloudFormation stack (Lambda arm64 + API Gateway HTTP API) and deploy script
@@ -75,11 +75,12 @@ To serve it on your own hostname, run the script once with `TRACKSIDE_DOMAIN=mcp
 | `race_result` | placings, margins, time, and how it was run: where the placegetters were at the 800 and their last 600 m |
 | `jockey_or_trainer_stats` | wins and places over a period |
 | `follow_horse` / `unfollow_horse` / `my_stable` | a stable of followed horses, remembered across sessions: what they've done since you last asked, today's engagements and results, and where each horse runs next ("runs on Saturday in the Caulfield Cup, race 8 at Caulfield at 5 pm, barrier 4") |
+| `next_race` | the next race to jump, anywhere or in one state or at one venue, how far off it is and its start in your clock ("race 8 at Caulfield, due to jump in about 25 minutes, at 4 pm Queensland time, 5 pm at the track"), with racing in your home state first; after the last race, tomorrow's first |
 | `set_home_state` | read meetings in your state first and in full, and hear every start time in your state's clock |
 | `forget_me` | delete everything Trackside remembers about you |
 | `carnival_guide` | the 2026 Spring Racing Carnival feature races |
 
-Every tool carries a title and the MCP behaviour hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), so a host knows that `forget_me` and `unfollow_horse` delete, that `follow_horse`, `my_stable` and `set_home_state` write the listener's profile, and that the other seven only read. Input schemas use only what every model provider reads (plain types, no nullable type arrays, formats or bounds), which is what MCP Inspector's schema portability check looks for.
+Every tool carries a title and the MCP behaviour hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), so a host knows that `forget_me` and `unfollow_horse` delete, that `follow_horse`, `my_stable` and `set_home_state` write the listener's profile, and that the other eight only read. Input schemas use only what every model provider reads (plain types, no nullable type arrays, formats or bounds), which is what MCP Inspector's schema portability check looks for.
 
 ## MCP App: the race card on screen
 
