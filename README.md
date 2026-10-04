@@ -1,13 +1,52 @@
 # Trackside
 
-A voice-first form guide for Australian thoroughbred racing, built as an Alexa+ add-on (a self-hosted MCP server) for the **Build, Ship, Shape: Amazon Developer Hackathon 2026**.
+**The form guide that talks.** Trackside is an Alexa+ add-on for Australian thoroughbred racing: ask out loud who is running, how a horse has been going, how a race was run or what's next, and hear a short answer a racing friend would give. It remembers the horses you follow, says start times in your own clock, and on a screen it draws its own race card. **No betting, no odds, no tips**: the form, with a source on every answer.
 
-Ask Alexa+ what racing is on, who is in the Caulfield Cup, how a horse has been going, who ran the fastest last 600 metres, or to follow a horse through the Spring Carnival. Trackside is a fan companion: **it has no betting, no odds and no tips**, and every answer names its source.
+Built as a self-hosted MCP server for the **Build, Ship, Shape: Amazon Developer Hackathon 2026** (Alexa+ track).
+
+<p align="center"><img src="docs/images/race-card.png" width="560" alt="Trackside's race card MCP App: the Caulfield Cup field with form strips, where each horse usually settles, and a Following chip on the listener's horse"></p>
+
+## Try it
+
+- **Simulator**: [mcp.racingaidataset.com.au/sim](https://mcp.racingaidataset.com.au/sim), a simulated Alexa+ experience (Echo Show style, voice or typing, with a panel listing every MCP call). Link an account, say "I'm in Brisbane", then ask for the Caulfield Cup.
+- **Your own MCP host**: `https://mcp.racingaidataset.com.au/mcp` (Streamable HTTP, OAuth 2.1 with PKCE). Setup and a test account: [docs/testing.md](docs/testing.md).
+- **Locally, no AWS**: `cargo run -p trackside-mcp` serves a demo fixture on `http://127.0.0.1:8000/mcp` (see Run locally).
+
+## What it sounds like
+
+> **"Who ran home fastest in race 6 at Flemington on Saturday?"**
+> The Next Episode ran home fastest, with the quickest last 600 metres in thirty-three point five eight seconds on the heavy track.
+>
+> **"Follow The Next Episode."** ... *three days later* ... **"How's my stable?"**
+> Since you last checked on Thursday, The Next Episode won at Flemington on Saturday ...
+>
+> **"Tell me about the Cofield Cup."**
+> Taking Cofield Cup as the Caulfield Cup at Caulfield on Saturday 17 October. Australia's richest handicap over 2400 metres and the traditional lead-up to the Melbourne Cup ...
+>
+> **"What's the next race?"**
+> The next race is race 8 at Caulfield, the Caulfield Cup over 2400 metres, due to jump in about 25 minutes, at 4 pm Queensland time, 5 pm at the track.
+>
+> **"Who should I back?"**
+> That's not something Trackside does. I can give you the form instead ...
+
+## Why it's different
+
+- **It remembers you.** Follow a horse once and every later answer knows: the race card says "Your horse Sample Stayer is in it, barrier 4", a result says how it finished, and "How's my stable?" catches you up on what happened since you last asked, across sessions (DynamoDB, keyed by your account; "forget me" deletes it).
+- **It draws its own screen.** The race card is an MCP App served by the server: tap a horse and the App calls `horse_form` through the host; Explain and Result run in place.
+- **It understands racing as it's said.** Ask for a race by name ("the Epsom", "Cofield Cup" as misheard), a horse by its sound ("Demo Myla"), or a venue by one word ("Warwick", taken as Warwick Farm and said so).
+- **It speaks like a person.** "Three-quarters of a length", "two minutes two point four one", "in Victoria", "Super Maiden Plate", never "0.8 L", "2:02.41", "VIC" or "MDN PLT". Screens still get the published figures.
+- **It knows what day it is.** Start times come in your own state's clock with "due to jump in about 20 minutes", and the Spring Carnival guide leads with what's next and the latest result, right through judging in November.
+- **It reads how a race was run**, from sectional timing: where each placegetter was at the 800 and its last 600 metres.
+- **It stays clean.** Prices, bookmaker brands and wagering slogans are stripped at ingest, and model-written explanations are checked for betting words before anyone hears them.
+
+| Tap a horse | How it was run | Your stable |
+| --- | --- | --- |
+| <img src="docs/images/tap-a-horse.png" width="260" alt="Form view inside the race card: career and condition records, recent starts with position at the 800 and last 600 m"> | <img src="docs/images/how-it-was-run.png" width="260" alt="Result view: podium, fastest last 600 m, and each placegetter's position at the 800"> | <img src="docs/images/stable.png" width="260" alt="Stable view: each followed horse and where it runs next"> |
+
+**Built on AWS**: Lambda (arm64, Rust) behind API Gateway, Cognito OAuth, DynamoDB memory, S3 snapshots refreshed twice a day by EventBridge, CloudWatch metrics, dashboard and alarms, and Bedrock and Polly in the simulator. Every service, IAM boundary and cost: [docs/aws.md](docs/aws.md). Architecture: [docs/architecture.mmd](docs/architecture.mmd).
 
 - Track: Alexa+ (MCP server, Streamable HTTP, MCP spec 2025-11-25)
-- Live endpoint: `https://mcp.racingaidataset.com.au/mcp` (OAuth 2.1, see Auth)
-- Simulator: `https://mcp.racingaidataset.com.au/sim`, a simulated Alexa+ experience (see Simulator)
-- Mini-challenges: AWS Builder (Lambda, API Gateway, Cognito, DynamoDB, Bedrock, Polly), Open Source (MIT, new repo)
+- Mini-challenges: AWS Builder, Open Source ([`mcp-cognito-auth`](oss/mcp-cognito-auth), MIT)
 
 ## Layout
 
