@@ -207,6 +207,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-dynamodb"
+version = "1.129.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06027c5a4de74b9ff7db7cb851dba0ac945b726ec3b35d756fa0d756d655e685"
+dependencies = [
+ "arc-swap",
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-schema",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 1.5.0",
+ "regex-lite",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "aws-sdk-polly"
 version = "1.121.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3351,8 +3377,10 @@ name = "trackside-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "aws-config",
  "aws-sdk-bedrockruntime",
+ "aws-sdk-dynamodb",
  "aws-sdk-s3",
  "axum",
  "base64 0.22.1",

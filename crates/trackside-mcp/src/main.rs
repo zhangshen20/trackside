@@ -13,10 +13,15 @@
 //! server publishes OAuth metadata under `/.well-known/` (see `auth.rs`). Without it the
 //! endpoint is open, which is how it runs locally.
 //!
+//! Memory: with `TRACKSIDE_MEMORY_TABLE` set, each signed-in listener's followed horses, home
+//! state and last stable check live in that DynamoDB table and survive across sessions;
+//! otherwise in this process (see `memory.rs`).
+//!
 //! Bedrock: with `TRACKSIDE_BEDROCK_MODEL` set, `explain_race` has a Bedrock model reword its
 //! facts for the ear, falling back to its template sentence (see `summary.rs`).
 
 mod auth;
+mod memory;
 mod summary;
 #[cfg(test)]
 mod tests;
@@ -33,8 +38,9 @@ use tower_http::cors::CorsLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use auth::Auth;
+use memory::Memory;
 use summary::Summariser;
-use tools::{Stable, Trackside};
+use tools::Trackside;
 use trackside_core::{FixtureStore, Store};
 
 async fn load_store() -> Result<FixtureStore> {
@@ -103,10 +109,11 @@ async fn main() -> Result<()> {
         None => {}
     }
     let summariser = Summariser::from_env().await.map(Arc::new);
+    let memory = memory::from_env().await;
     let ct = tokio_util::sync::CancellationToken::new();
     let app = build_app(
         store,
-        Default::default(),
+        memory,
         summariser,
         auth,
         stateless,
@@ -134,7 +141,7 @@ async fn main() -> Result<()> {
 
 fn build_app(
     store: Arc<dyn Store>,
-    stable: Stable,
+    memory: Arc<dyn Memory>,
     summariser: Option<Arc<Summariser>>,
     auth: Option<Arc<Auth>>,
     stateless: bool,
@@ -160,7 +167,7 @@ fn build_app(
         move || {
             Ok(Trackside::new(
                 store.clone(),
-                stable.clone(),
+                memory.clone(),
                 summariser.clone(),
             ))
         },

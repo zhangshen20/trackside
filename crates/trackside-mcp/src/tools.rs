@@ -1,7 +1,6 @@
 //! The Trackside tool surface. Every tool answers in two layers: a short spoken-style text
 //! block for voice, and `structured_content` for screens and agents. No prices, ever.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{NaiveDate, Utc};
@@ -12,29 +11,27 @@ use rmcp::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use tokio::sync::RwLock;
 
 use trackside_core::{
     horse_key, looks_like_track_code, prize_total, spoken_money, spring_carnival_2026,
-    venue_matches, RaceCard, Record, Store, SOURCE_RACING_AUSTRALIA, SOURCE_SECTIONALS,
+    venue_matches, Meeting, RaceCard, Record, Store, SOURCE_RACING_AUSTRALIA, SOURCE_SECTIONALS,
 };
 
 use crate::auth::Caller;
+use crate::memory::{Memory, Profile};
 use crate::summary::Summariser;
 
 #[derive(Clone)]
 pub struct Trackside {
     store: Arc<dyn Store>,
-    /// Horses each user follows, keyed by the signed-in account (see `caller_key`). Held in
-    /// memory, so a cold start forgets it; durable storage is a separate change.
-    stable: Stable,
+    /// What each listener asked Trackside to remember, keyed by the signed-in account (see
+    /// `caller_key`): followed horses, home state, when they last heard their stable report.
+    memory: Arc<dyn Memory>,
     /// Rewords `explain_race` for the ear when Bedrock is configured (see `summary.rs`).
     summariser: Option<Arc<Summariser>>,
 }
 
-pub type Stable = Arc<RwLock<HashMap<String, Vec<String>>>>;
-
-/// Whose stable a request reads: the OAuth subject when the server checks tokens, or one
+/// Whose profile a request reads: the OAuth subject when the server checks tokens, or one
 /// shared list when it runs without auth (local development).
 fn caller_key(ctx: &RequestContext<RoleServer>) -> String {
     ctx.extensions
@@ -67,6 +64,14 @@ pub struct HorseArgs {
     /// The horse's name as it appears in the field.
     pub horse: String,
 }
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct StateArgs {
+    /// The listener's home state: VIC, NSW, QLD, SA, WA, TAS, NT or ACT.
+    pub state: String,
+}
+
+const STATES: &[&str] = &["VIC", "NSW", "QLD", "SA", "WA", "TAS", "NT", "ACT"];
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PersonArgs {
@@ -152,16 +157,38 @@ fn going_records(records: &[(&str, &Record)]) -> String {
     }
 }
 
+/// "Flemington in VIC: 10 races, track Good 4, first race 12:35."
+fn meeting_line(m: &Meeting) -> String {
+    let first = m
+        .races
+        .first()
+        .map(|r| r.start_local.as_str())
+        .unwrap_or("time to be confirmed");
+    format!(
+        "{} in {}: {} race{}, track {}, first race {}.",
+        m.venue,
+        m.state,
+        m.races.len(),
+        if m.races.len() == 1 { "" } else { "s" },
+        m.track_condition.as_deref().unwrap_or("not yet rated"),
+        first
+    )
+}
+
 fn fmt_len(m: Option<f64>) -> String {
     m.map(|v| format!("{v:.1} lengths")).unwrap_or_default()
 }
 
 #[tool_router]
 impl Trackside {
-    pub fn new(store: Arc<dyn Store>, stable: Stable, summariser: Option<Arc<Summariser>>) -> Self {
+    pub fn new(
+        store: Arc<dyn Store>,
+        memory: Arc<dyn Memory>,
+        summariser: Option<Arc<Summariser>>,
+    ) -> Self {
         Self {
             store,
-            stable,
+            memory,
             summariser,
         }
     }
@@ -171,6 +198,7 @@ impl Trackside {
     )]
     async fn list_meetings(
         &self,
+        ctx: RequestContext<RoleServer>,
         Parameters(args): Parameters<DateArgs>,
     ) -> Result<CallToolResult, McpError> {
         let date = parse_date(&args.date)?;
@@ -184,34 +212,44 @@ impl Trackside {
                 json!({ "date": date, "meetings": [] }),
             ));
         }
-        let spoken = meetings
-            .iter()
-            .map(|m| {
-                let first = m
-                    .races
-                    .first()
-                    .map(|r| r.start_local.as_str())
-                    .unwrap_or("time to be confirmed");
-                format!(
-                    "{} in {}: {} race{}, track {}, first race {}.",
-                    m.venue,
-                    m.state,
-                    m.races.len(),
-                    if m.races.len() == 1 { "" } else { "s" },
-                    m.track_condition
-                        .clone()
-                        .unwrap_or_else(|| "not yet rated".into()),
-                    first
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
+        // A listener with a home state hears its meetings in full and the rest by name.
+        let home = match args.state {
+            Some(_) => None,
+            None => self.profile(&ctx).await.home_state,
+        };
+        let is_home = |m: &&Meeting| {
+            home.as_deref()
+                .is_some_and(|h| m.state.eq_ignore_ascii_case(h))
+        };
+        meetings.sort_by_key(|m| !is_home(&m));
+        let home_count = meetings.iter().filter(is_home).count();
+        let (full, others) = match home_count {
+            0 => (&meetings[..], &meetings[..0]),
+            n => meetings.split_at(n),
+        };
+        let mut spoken = full.iter().map(meeting_line).collect::<Vec<_>>().join(" ");
+        if let (Some(h), 0) = (&home, home_count) {
+            spoken = format!("There's no racing in {h}. {spoken}");
+        }
+        if !others.is_empty() {
+            let named = others
+                .iter()
+                .take(6)
+                .map(|m| m.venue.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let more = match others.len().saturating_sub(6) {
+                0 => String::new(),
+                n => format!(" and {n} more"),
+            };
+            spoken.push_str(&format!(" Elsewhere: {named}{more}."));
+        }
         Ok(answer(
             format!(
                 "According to {SOURCE_RACING_AUSTRALIA}, on {}: {spoken}",
                 date.format("%A %-d %B")
             ),
-            json!({ "date": date, "source": SOURCE_RACING_AUSTRALIA, "meetings": meetings.iter().map(|m| json!({
+            json!({ "date": date, "source": SOURCE_RACING_AUSTRALIA, "home_state": home, "meetings": meetings.iter().map(|m| json!({
                 "venue": m.venue, "state": m.state, "track_condition": m.track_condition, "rail": m.rail,
                 "races": m.races.iter().map(|r| json!({"race_number": r.race_number, "name": r.name, "start_local": r.start_local, "distance_m": r.distance_m, "grade": r.grade})).collect::<Vec<_>>()
             })).collect::<Vec<_>>() }),
@@ -556,7 +594,7 @@ impl Trackside {
     }
 
     #[tool(
-        description = "Follow a horse. Trackside will report when it is in a field or has run. Use for 'follow Sample Stayer' or 'add it to my stable'."
+        description = "Follow a horse. Trackside remembers the horses each listener follows across sessions and reports when they are in a field or have run. Use for 'follow Sample Stayer' or 'add it to my stable'."
     )]
     async fn follow_horse(
         &self,
@@ -575,23 +613,69 @@ impl Trackside {
             ));
         };
         let name = form.horse;
-        let mut stables = self.stable.write().await;
-        let stable = stables.entry(caller_key(&ctx)).or_default();
-        if !stable.iter().any(|h| horse_key(h) == horse_key(&name)) {
-            stable.push(name.clone());
+        let user = caller_key(&ctx);
+        let mut profile = self.memory.load(&user).await.map_err(internal)?;
+        let first = profile.horses.is_empty();
+        if !profile
+            .horses
+            .iter()
+            .any(|h| horse_key(h) == horse_key(&name))
+        {
+            profile.horses.push(name.clone());
         }
+        // The first follow starts the clock for "since you last checked".
+        profile.last_checked.get_or_insert_with(today);
+        self.memory.save(&user, &profile).await.map_err(internal)?;
+        let n = profile.horses.len();
+        let remember = if first && self.memory.durable() {
+            " I'll remember your stable next time, and tell you how they've gone since you last asked."
+        } else {
+            ""
+        };
         Ok(answer(
             format!(
-                "Following {name}. You now follow {} horse{}.",
-                stable.len(),
-                if stable.len() == 1 { "" } else { "s" }
+                "Following {name}. You now follow {n} horse{}.{remember}",
+                if n == 1 { "" } else { "s" }
             ),
-            json!({ "found": true, "stable": *stable }),
+            json!({ "found": true, "stable": profile.horses, "remembered": self.memory.durable() }),
         ))
     }
 
     #[tool(
-        description = "The horses the user follows, and anything new for them: today's engagements and their latest results. Use for 'what's happening with my stable' or 'any of my horses running today'."
+        description = "Stop following a horse. Use for 'unfollow Sample Stayer' or 'take it out of my stable'."
+    )]
+    async fn unfollow_horse(
+        &self,
+        ctx: RequestContext<RoleServer>,
+        Parameters(args): Parameters<HorseArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let user = caller_key(&ctx);
+        let mut profile = self.memory.load(&user).await.map_err(internal)?;
+        let key = horse_key(&args.horse);
+        let Some(i) = profile.horses.iter().position(|h| horse_key(h) == key) else {
+            let following = match profile.horses.as_slice() {
+                [] => "You aren't following any horses.".to_string(),
+                hs => format!("You follow {}.", spoken_list(hs)),
+            };
+            return Ok(answer(
+                format!("You weren't following {}. {following}", args.horse.trim()),
+                json!({ "found": false, "stable": profile.horses }),
+            ));
+        };
+        let name = profile.horses.remove(i);
+        self.memory.save(&user, &profile).await.map_err(internal)?;
+        let left = match profile.horses.len() {
+            0 => "Your stable is empty now.".to_string(),
+            n => format!("You follow {n} horse{}.", if n == 1 { "" } else { "s" }),
+        };
+        Ok(answer(
+            format!("Stopped following {name}. {left}"),
+            json!({ "found": true, "removed": name, "stable": profile.horses }),
+        ))
+    }
+
+    #[tool(
+        description = "The horses the user follows and what's new for them: how they have run since the user last asked (remembered across sessions), today's engagements and results. Use for 'what's happening with my stable', 'any of my horses running today' or 'how did my horses go'."
     )]
     async fn my_stable(
         &self,
@@ -599,13 +683,9 @@ impl Trackside {
         Parameters(args): Parameters<DateArgs>,
     ) -> Result<CallToolResult, McpError> {
         let date = parse_date(&args.date)?;
-        let stable = self
-            .stable
-            .read()
-            .await
-            .get(&caller_key(&ctx))
-            .cloned()
-            .unwrap_or_default();
+        let user = caller_key(&ctx);
+        let mut profile = self.memory.load(&user).await.map_err(internal)?;
+        let stable = profile.horses.clone();
         if stable.is_empty() {
             return Ok(answer(
                 "You aren't following any horses yet. Say 'follow' and a horse's name to start."
@@ -616,6 +696,38 @@ impl Trackside {
         let meetings = self.store.meetings(date).await.map_err(internal)?;
         let mut lines = Vec::new();
         let mut engagements = Vec::new();
+        // What happened between the last report and this day, from each horse's form.
+        let since = profile.last_checked.filter(|d| *d < date);
+        let mut catch_up = Vec::new();
+        if let Some(since) = since {
+            let mut heard = Vec::new();
+            for horse in &stable {
+                let Some(form) = self.store.horse_form(horse).await.map_err(internal)? else {
+                    continue;
+                };
+                let mut runs: Vec<_> = form
+                    .starts
+                    .iter()
+                    .filter(|s| s.date > since && s.date < date)
+                    .collect();
+                runs.sort_by_key(|s| s.date);
+                for s in runs {
+                    heard.push(format!(
+                        "{horse} {}{} on {}",
+                        finish_words(s.finish, s.starters),
+                        at_venue(&s.venue),
+                        s.date.format("%A %-d %B")
+                    ));
+                    catch_up.push(json!({ "horse": horse, "date": s.date, "venue": s.venue, "finish": s.finish, "starters": s.starters, "distance_m": s.distance_m, "condition": s.condition }));
+                }
+            }
+            let when = since.format("%A %-d %B");
+            lines.push(if heard.is_empty() {
+                format!("None of your horses have raced since you last checked on {when}")
+            } else {
+                format!("Since you last checked on {when}: {}", heard.join("; "))
+            });
+        }
         for horse in &stable {
             let mut found = false;
             for m in &meetings {
@@ -672,7 +784,8 @@ impl Trackside {
                     }
                 }
             }
-            if !found {
+            // Horses already covered by the catch-up don't need their last start again.
+            if !found && !catch_up.iter().any(|c| c["horse"] == horse.as_str()) {
                 let last = self
                     .store
                     .horse_form(horse)
@@ -684,13 +797,7 @@ impl Trackside {
                         "{} isn't engaged on {}; last start it {}{} on {}",
                         horse,
                         date.format("%-d %b"),
-                        s.finish
-                            .map(|f| if f == 1 {
-                                "won".to_string()
-                            } else {
-                                format!("ran {}{}", f, ordinal(f))
-                            })
-                            .unwrap_or_else(|| "ran".into()),
+                        finish_words(s.finish, None),
                         at_venue(&s.venue),
                         s.date.format("%-d %b")
                     )),
@@ -701,9 +808,54 @@ impl Trackside {
                 }
             }
         }
+        // The next report starts from here; asking about a future card doesn't move it.
+        let heard_up_to = date.min(today());
+        if profile.last_checked.is_none_or(|d| d < heard_up_to) {
+            profile.last_checked = Some(heard_up_to);
+            self.memory.save(&user, &profile).await.map_err(internal)?;
+        }
         Ok(answer(
             format!("{}. Source: {SOURCE_RACING_AUSTRALIA}.", lines.join(". ")),
-            json!({ "date": date, "stable": stable, "engagements": engagements }),
+            json!({ "date": date, "stable": stable, "since": since, "catch_up": catch_up, "engagements": engagements, "remembered": self.memory.durable() }),
+        ))
+    }
+
+    #[tool(
+        description = "Remember the listener's home state, so meetings there are read out first and in full. Use for 'I'm in Sydney', 'I follow Queensland racing' or 'set my state to VIC'."
+    )]
+    async fn set_home_state(
+        &self,
+        ctx: RequestContext<RoleServer>,
+        Parameters(args): Parameters<StateArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let state = args.state.trim().to_ascii_uppercase();
+        if !STATES.contains(&state.as_str()) {
+            return Err(McpError::invalid_params(
+                format!("state must be one of {}", STATES.join(", ")),
+                None,
+            ));
+        }
+        let user = caller_key(&ctx);
+        let mut profile = self.memory.load(&user).await.map_err(internal)?;
+        profile.home_state = Some(state.clone());
+        self.memory.save(&user, &profile).await.map_err(internal)?;
+        Ok(answer(
+            format!("Got it. I'll read {state} meetings first from now on."),
+            json!({ "home_state": state, "remembered": self.memory.durable() }),
+        ))
+    }
+
+    #[tool(
+        description = "Forget everything Trackside remembers about the listener: followed horses, home state and when they last checked. Use for 'forget me' or 'delete my data'."
+    )]
+    async fn forget_me(&self, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        self.memory
+            .forget(&caller_key(&ctx))
+            .await
+            .map_err(internal)?;
+        Ok(answer(
+            "Done. I've forgotten your followed horses and your home state.".into(),
+            json!({ "forgotten": true }),
         ))
     }
 
@@ -735,6 +887,18 @@ impl Trackside {
 }
 
 impl Trackside {
+    /// The caller's remembered profile; an empty one when memory can't be read, so a storage
+    /// fault never stops a racing answer.
+    async fn profile(&self, ctx: &RequestContext<RoleServer>) -> Profile {
+        self.memory
+            .load(&caller_key(ctx))
+            .await
+            .unwrap_or_else(|err| {
+                tracing::warn!(error = ?err, "reading the listener's profile failed");
+                Profile::default()
+            })
+    }
+
     /// Why a race can't be found, in words that help the next question: no racing at that
     /// venue that day (and where there was), no such race on the card, or not run yet.
     async fn missing_race(
@@ -777,8 +941,7 @@ impl Trackside {
                 structured,
             );
         }
-        let today = Utc::now().with_timezone(&Melbourne).date_naive();
-        let spoken = match (want_result, date >= today) {
+        let spoken = match (want_result, date >= today()) {
             (true, true) => format!(
                 "Race {race_number} at {} on {day} hasn't been run yet, or its result isn't in.",
                 meeting.venue
@@ -803,6 +966,29 @@ impl Trackside {
             .and_then(|ms| ms.into_iter().find(|m| venue_matches(&m.venue, venue)))
             .and_then(|m| m.track_condition)
             .unwrap_or_else(|| "not yet rated".into())
+    }
+}
+
+fn today() -> NaiveDate {
+    Utc::now().with_timezone(&Melbourne).date_naive()
+}
+
+/// "won", "ran 3rd of 12", "ran 5th", or "ran" when the finish isn't known.
+fn finish_words(finish: Option<u32>, starters: Option<u32>) -> String {
+    match (finish, starters) {
+        (Some(1), _) => "won".into(),
+        (Some(f), Some(n)) => format!("ran {f}{} of {n}", ordinal(f)),
+        (Some(f), None) => format!("ran {f}{}", ordinal(f)),
+        (None, _) => "ran".into(),
+    }
+}
+
+/// "A", "A and B", "A, B and C".
+fn spoken_list(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
     }
 }
 
@@ -835,7 +1021,7 @@ impl ServerHandler for Trackside {
                 info
             })
             .with_instructions(
-                "Trackside is a form guide for Australian thoroughbred racing: meetings, race cards, horse form, results, sectional timing, jockey and trainer records and a Spring Carnival guide. It is a fan companion with no betting or prices; never ask it for odds or tips. Attribute facts to the source each answer names."
+                "Trackside is a form guide for Australian thoroughbred racing: meetings, race cards, horse form, results, sectional timing, jockey and trainer records and a Spring Carnival guide. It remembers each signed-in listener across sessions: the horses they follow, their home state, and what has happened to their horses since they last asked. It is a fan companion with no betting or prices; never ask it for odds or tips. Attribute facts to the source each answer names."
                     .to_string(),
             )
     }
