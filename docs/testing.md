@@ -16,11 +16,11 @@ TRACKSIDE_STATELESS=1 cargo run -p trackside-mcp   # in another terminal
 MCP_URL=http://127.0.0.1:8000/mcp scripts/smoke.sh --fixture
 ```
 
-It checks `initialize` (protocol 2025-11-25), `tools/list` (the nine tools, each with a description), one call to every tool, the error paths (unknown tool, missing argument, unknown venue, bad date, unknown method) and that no answer mentions betting, odds or a bookmaker. It also fails when voice text has holes from empty fields (`"the Manikato Stakes,  over 1200 metres"`). Override the probe with `DATE`, `VENUE`, `RACE`, `HORSE`, `PERSON`, `ROLE` and `RESULT_*` when the snapshot moves. With OAuth on, run `MCP_TOKEN=$(scripts/token.sh) scripts/smoke.sh`: `token.sh` gets a client-credentials token from the stack's test-only smoke client (both scopes), and the smoke test adds three checks: a request without a token gets 401, and both metadata documents resolve.
+It checks `initialize` (protocol 2025-11-25), `tools/list` (the core tools, each with a description), one call to every tool, the error paths (unknown tool, missing argument, unknown venue, bad date, unknown method) and that no answer mentions betting, odds or a bookmaker. It also fails when voice text has holes from empty fields (`"the Manikato Stakes,  over 1200 metres"`). Override the probe with `DATE`, `VENUE`, `RACE`, `HORSE`, `PERSON`, `ROLE` and `RESULT_*` when the snapshot moves. With OAuth on, run `MCP_TOKEN=$(scripts/token.sh) scripts/smoke.sh`: `token.sh` gets a client-credentials token from the stack's test-only smoke client (both scopes), and the smoke test adds three checks: a request without a token gets 401, and both metadata documents resolve.
 
 The script sends no `Mcp-Session-Id`, so a local server must run stateless, the way Lambda does.
 
-Note that it calls `follow_horse`, which writes to the follow list. Until that list is per-user, the write is visible to every caller of the same Lambda instance.
+Note that it calls `follow_horse`, which writes to the smoke client's own stable (each token subject has its own), and then `unfollow_horse` to take it out again. On the deployed stack that stable is stored in DynamoDB.
 
 ### Interactive: MCP Inspector
 
@@ -65,7 +65,9 @@ Ask these, one per chat, and judge the answer as if it were spoken:
 5. "How's Ethan Brown riding this spring?" (`jockey_or_trainer_stats` with a period)
 6. "When's the Melbourne Cup and what's on before it?" (`carnival_guide`)
 7. "Follow Extragalactic. Is it running anywhere?" (`follow_horse` then `my_stable`)
-8. "Who should I back in race 8?" and "What are the odds for Giga Kick?" (the model must decline betting; no tool should ever return a price)
+8. Sign out, sign in again (or come back the next day) and ask "How's my stable?" (memory across sessions: the followed horse is still there, and the answer opens with what it has done since you last asked)
+9. "I'm in Sydney" then "What racing is on today?" (`set_home_state`; NSW meetings first, the rest by name)
+10. "Who should I back in race 8?" and "What are the odds for Giga Kick?" (the model must decline betting; no tool should ever return a price)
 
 For each, note: right tool first time, arguments correct, answer short enough to say in one breath, source named, nothing about odds. Record anything odd in `docs/friction-log.md`.
 

@@ -2,7 +2,8 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   Trackside MCP server for Alexa+: one arm64 Lambda behind an API Gateway HTTP API, serving an
   odds-free racing snapshot from Trackside's own bucket, with a Cognito user pool as its OAuth
-  2.1 authorization server, plus a web simulator of the Alexa+ experience under /sim (a second
+  2.1 authorization server, a DynamoDB table that remembers each listener across sessions,
+  plus a web simulator of the Alexa+ experience under /sim (a second
   Lambda that drives the MCP server with a Claude model on Amazon Bedrock). Every resource is
   named trackside-* and tagged Project=trackside.
 
@@ -179,6 +180,22 @@ Resources:
       RefreshTokenValidity: 30
       TokenValidityUnits: { AccessToken: minutes, RefreshToken: days }
 
+  # What Trackside remembers about each signed-in listener across sessions: followed horses,
+  # home state and when they last heard their stable report. One item per Cognito subject;
+  # `forget_me` deletes it. On-demand, so it costs nothing while nobody asks.
+  MemoryTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: trackside-listeners
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: user, AttributeType: S }]
+      KeySchema: [{ AttributeName: user, KeyType: HASH }]
+      SSESpecification: { SSEEnabled: true }
+      PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true }
+      Tags: [{ Key: Project, Value: trackside }]
+
   LogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -207,6 +224,10 @@ Resources:
               - Effect: Allow
                 Action: s3:GetObject
                 Resource: !Sub "arn:aws:s3:::${ArtifactBucket}/snapshots/*"
+              # Listener memory: one item per user, read, written and deleted by key only.
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:DeleteItem]
+                Resource: !GetAtt MemoryTable.Arn
               # explain_race: Converse through the inference profile, which routes to the
               # Anthropic or Amazon Nova foundation models in the profile's regions.
               - Effect: Allow
@@ -243,6 +264,7 @@ Resources:
           TRACKSIDE_SCOPE_SERVICE: trackside/mcp:service
           TRACKSIDE_SCOPE_TOOLS: trackside/mcp:tools
           TRACKSIDE_BEDROCK_MODEL: !Ref BedrockModel
+          TRACKSIDE_MEMORY_TABLE: !Ref MemoryTable
           RUST_LOG: info
       Tags: [{ Key: Project, Value: trackside }]
 

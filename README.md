@@ -7,7 +7,7 @@ Ask Alexa+ what racing is on, who is in the Caulfield Cup, how a horse has been 
 - Track: Alexa+ (MCP server, Streamable HTTP, MCP spec 2025-11-25)
 - Live endpoint: `https://mcp.racingaidataset.com.au/mcp` (OAuth 2.1, see Auth)
 - Simulator: `https://mcp.racingaidataset.com.au/sim`, a simulated Alexa+ experience (see Simulator)
-- Mini-challenges: AWS Builder (Lambda, API Gateway, Cognito, Bedrock), Open Source (MIT, new repo)
+- Mini-challenges: AWS Builder (Lambda, API Gateway, Cognito, DynamoDB, Bedrock, Polly), Open Source (MIT, new repo)
 
 ## Layout
 
@@ -15,7 +15,7 @@ Ask Alexa+ what racing is on, who is in the Caulfield Cup, how a horse has been 
 crates/trackside-core   domain model (odds-free) and the Store trait; JSON fixture store
 crates/trackside-ingest parsers for the archived fields, form, results and sectionals, and the snapshot builder (prices and bookmaker names dropped)
 crates/trackside-snapshot  CLI and scheduled Lambda: build a snapshot from the S3 archive (read-only) and publish it to Trackside's bucket
-crates/trackside-mcp    the MCP server: 9 tools over axum + rmcp; runs locally or on AWS Lambda
+crates/trackside-mcp    the MCP server: 12 tools over axum + rmcp; runs locally or on AWS Lambda
 crates/trackside-sim    the simulator: a web page plus a server where Claude on Amazon Bedrock drives the MCP server
 fixtures/demo.json      a small demo fixture (synthetic names) for tests and local runs
 deploy/                 CloudFormation stack (Lambda arm64 + API Gateway HTTP API) and deploy script
@@ -48,7 +48,7 @@ TRACKSIDE_SIM_TODAY=2026-09-26 cargo run -p trackside-sim   # open http://127.0.
 
 ## Auth
 
-The deployed server is an OAuth 2.1 resource server in the shape Alexa+ expects: a Cognito user pool issues a client-credentials token for discovery (`trackside/mcp:service`) and an authorization-code + PKCE token for tool calls (`trackside/mcp:tools`). Requests without a token get `401` pointing at `/.well-known/oauth-protected-resource`, and the server publishes `/.well-known/oauth-authorization-server` for Cognito. Each signed-in user gets their own follow list. Locally, auth is off unless `TRACKSIDE_AUTH_ISSUER` is set; see `crates/trackside-mcp/src/auth.rs` and `docs/testing.md`.
+The deployed server is an OAuth 2.1 resource server in the shape Alexa+ expects: a Cognito user pool issues a client-credentials token for discovery (`trackside/mcp:service`) and an authorization-code + PKCE token for tool calls (`trackside/mcp:tools`). Requests without a token get `401` pointing at `/.well-known/oauth-protected-resource`, and the server publishes `/.well-known/oauth-authorization-server` for Cognito. Each signed-in user gets their own memory (see Memory). Locally, auth is off unless `TRACKSIDE_AUTH_ISSUER` is set; see `crates/trackside-mcp/src/auth.rs` and `docs/testing.md`.
 
 ## Deploy to AWS
 
@@ -71,8 +71,18 @@ To serve it on your own hostname, run the script once with `TRACKSIDE_DOMAIN=mcp
 | `explain_race` | what a race is, why it matters, form contenders |
 | `race_result` | placings, margins, time, fastest last 600 m |
 | `jockey_or_trainer_stats` | wins and places over a period |
-| `follow_horse` / `my_stable` | a watch list with engagements and latest results |
+| `follow_horse` / `unfollow_horse` / `my_stable` | a stable of followed horses, remembered across sessions: what they've done since you last asked, today's engagements and results |
+| `set_home_state` | read meetings in your state first and in full |
+| `forget_me` | delete everything Trackside remembers about you |
 | `carnival_guide` | the 2026 Spring Racing Carnival feature races |
+
+## Memory
+
+Trackside remembers each signed-in listener between sessions, keyed by their Cognito subject in a DynamoDB table (`trackside-listeners`, on-demand, encrypted): the horses they follow, their home state, and the day they last heard their stable report. So a conversation can pick up where the last one left off:
+
+> "How's my stable?" "Since you last checked on Sunday 20 September: Demo Miler ran 2nd of 12 at Flemington on Saturday 26 September; Sample Stayer won at Flemington..."
+
+The catch-up comes from each followed horse's form between the last check and today, and is said once. `forget_me` deletes the item. The table holds no names or emails, only the subject, horse names, a state and a date. Locally (no `TRACKSIDE_MEMORY_TABLE`) memory lives in the process. See `crates/trackside-mcp/src/memory.rs`.
 
 ## Simulator
 

@@ -68,8 +68,9 @@ check "initialize speaks 2025-11-25 with tools" "$res" \
   'r["result"]["protocolVersion"] == "2025-11-25" and "tools" in r["result"]["capabilities"]'
 
 res=$(rpc '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')
-check "tools/list has the nine tools" "$res" \
-  'sorted(t["name"] for t in r["result"]["tools"]) == sorted(["list_meetings","get_race_card","horse_form","explain_race","race_result","jockey_or_trainer_stats","follow_horse","my_stable","carnival_guide"])'
+check "tools/list has the core tools" "$res" \
+  'set(["list_meetings","get_race_card","horse_form","explain_race","race_result","jockey_or_trainer_stats","follow_horse","my_stable","carnival_guide"]) <= set(t["name"] for t in r["result"]["tools"])'
+TOOLS="$res"
 check "every tool has a description" "$res" 'all(len(t.get("description","")) > 40 for t in r["result"]["tools"])'
 
 check "list_meetings"   "$(call list_meetings "{\"date\":\"$DATE\"}")" "$answered and r['result']['structuredContent']['meetings']"
@@ -81,6 +82,11 @@ check "jockey_or_trainer_stats" "$(call jockey_or_trainer_stats "{\"name\":\"$PE
 check "carnival_guide"  "$(call carnival_guide '{}')" "$answered and len(r['result']['structuredContent']['races']) >= 5"
 check "follow_horse"    "$(call follow_horse "{\"horse\":\"$HORSE\"}")" "$answered"
 check "my_stable"       "$(call my_stable "{\"date\":\"$DATE\"}")" "$answered"
+# Listener memory (servers since the memory change): unfollowing what was just followed.
+if grep -q '"unfollow_horse"' <<<"$TOOLS"; then
+  check "unfollow_horse" "$(call unfollow_horse "{\"horse\":\"$HORSE\"}")" \
+    "$answered and r['result']['structuredContent']['found']"
+fi
 
 # Voice text must read cleanly: no doubled spaces from empty fields, no "A  over".
 check "race card text has no blank fields" "$(call get_race_card "{\"venue\":\"$VENUE\",\"race_number\":$RACE,\"date\":\"$DATE\"}")" \
