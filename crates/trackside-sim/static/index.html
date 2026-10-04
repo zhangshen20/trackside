@@ -264,8 +264,26 @@
     unfollow_horse(s) { return s.stable ? cards.my_stable({ stable: s.stable, date: "" }) : null; },
     carnival_guide(s) {
       if (!s.races) return null;
-      return `<h2>Spring Racing Carnival 2026</h2><div class="list">
-        ${s.races.map((r) => `<div class="item"><div class="t">${esc(r.name)} <span class="badge">${esc(r.grade)}</span></div><div class="m">${esc(fmtDate(r.date))} · ${esc(r.venue)} · ${esc(r.distance_m)} m</div><div class="m">${esc(r.blurb)}</div></div>`).join("")}
+      // Each race wears where it stands: a winner badge once run, a countdown chip before.
+      // Tapping one asks about it by name. Past results only; nothing about who will win.
+      const mark = (r) => {
+        const res = r.result;
+        if (r.status === "run") return res ? `<span class="badge win">Won: ${esc(res.winner)}</span>` : '<span class="pill">Run</span>';
+        if (r.status === "today") return '<span class="badge">Today</span>';
+        const d = r.days_to_go;
+        return `<span class="pill">${d === 1 ? "Tomorrow" : "In " + esc(d) + " days"}</span>`;
+      };
+      const detail = (r) => {
+        const res = r.result;
+        if (r.status === "run") return res ? [res.jockey && "Ridden by " + res.jockey, res.margin && "by " + res.margin].filter(Boolean).join(", ") : "Result not on file";
+        if (r.status === "fields_not_out") return "Fields not out yet";
+        const jump = r.jump && r.jump.home_time ? r.start_local + " (" + r.jump.home_time + " your time)" : r.start_local;
+        return [r.race_number && "Race " + r.race_number, r.runners != null && r.runners + " runners", jump && "jumps " + jump].filter(Boolean).join(" · ");
+      };
+      const asks = (r) => (r.status === "run" ? `Who won the ${r.name}?` : `When's the ${r.name}?`);
+      const title = s.races.length === 1 ? esc(s.races[0].name) : "Spring Racing Carnival 2026";
+      return `<h2>${title}</h2><div class="list">
+        ${s.races.map((r) => `<div class="item" role="button" tabindex="0" style="cursor:pointer" data-q="${esc(asks(r))}"><div class="t">${esc(r.name)} ${mark(r)}</div><div class="m">${esc(fmtDate(r.date))} · ${esc(r.venue)} · ${esc(r.grade)}, ${esc(r.distance_m)} m</div><div class="m">${esc(detail(r))}</div></div>`).join("")}
       </div>`;
     },
   };

@@ -1585,28 +1585,67 @@ impl Trackside {
             idempotent_hint = true,
             open_world_hint = false
         ),
-        description = "The Spring Racing Carnival guide: the feature races, their dates, venues and what makes each one matter. Use for 'when is the Melbourne Cup' or 'what's on this carnival'."
+        input_schema = portable::<CarnivalArgs>(),
+        description = "The 2026 Spring Racing Carnival as it stands today: the next feature race with its date and, once fields are out, its runners and jump time; the latest feature result; and what follows. Give a race by name for that feature alone. Use for 'what's on this carnival', 'when's the Cox Plate' or 'who won the Caulfield Cup'."
     )]
-    async fn carnival_guide(&self) -> Result<CallToolResult, McpError> {
-        let races = spring_carnival_2026();
-        let spoken = races
-            .iter()
-            .map(|f| {
-                format!(
-                    "{} on {} at {}, {} over {} metres: {}",
-                    f.name,
-                    f.date.format("%A %-d %B"),
-                    f.venue,
-                    f.grade,
-                    f.distance_m,
-                    f.blurb
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
+    async fn carnival_guide(
+        &self,
+        ctx: RequestContext<RoleServer>,
+        Parameters(args): Parameters<CarnivalArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let today = parse_date(&args.date, self.today())?;
+        let home = self.profile(&ctx).await.home_state;
+        if let Some(heard) = args.race.as_deref().filter(|r| !r.trim().is_empty()) {
+            let feature = match trackside_core::resolve_feature(heard) {
+                Ok(f) => f,
+                Err(could_be) if !could_be.is_empty() => {
+                    let names: Vec<String> = could_be.iter().map(|n| with_article(n)).collect();
+                    return Ok(did_you_mean(heard, &names));
+                }
+                Err(_) => {
+                    let all: Vec<String> = spring_carnival_2026()
+                        .iter()
+                        .map(|f| with_article(f.name))
+                        .collect();
+                    return Ok(answer(
+                        format!(
+                            "{} isn't one of the Spring Carnival's feature races. They are {}.",
+                            heard.trim(),
+                            spoken_list(&all)
+                        ),
+                        json!({ "found": false, "date": today, "heard": heard.trim(), "features": spring_carnival_2026().iter().map(|f| f.name).collect::<Vec<_>>() }),
+                    ));
+                }
+            };
+            let status = self.feature_status(feature, today, home.as_deref()).await?;
+            let source = if status.quotes_store() {
+                format!(" Source: {SOURCE_RACING_AUSTRALIA}.")
+            } else {
+                String::new()
+            };
+            let race = status.json(today);
+            return Ok(answer(
+                format!("{}{source}", status.said(today)),
+                json!({ "found": true, "date": today, "race": race, "races": [race], "source": SOURCE_RACING_AUSTRALIA }),
+            ));
+        }
+        let mut statuses = Vec::new();
+        for feature in spring_carnival_2026() {
+            statuses.push(self.feature_status(feature, today, home.as_deref()).await?);
+        }
+        let spoken = carnival_words(&statuses, today);
+        let next = statuses.iter().find(|s| s.status != "run");
+        let latest = statuses.iter().rev().find(|s| s.status == "run");
         Ok(answer(
-            format!("The 2026 Melbourne Spring Racing Carnival. {spoken}"),
-            json!({ "races": races }),
+            spoken,
+            json!({
+                "date": today,
+                "next": next.map(|s| s.feature.name),
+                "latest": latest.map(|s| s.feature.name),
+                "carnival_over": next.is_none(),
+                "races": statuses.iter().map(|s| s.json(today)).collect::<Vec<_>>(),
+                "source": SOURCE_RACING_AUSTRALIA,
+            }),
         ))
     }
 }
@@ -2312,4 +2351,439 @@ fn race_words(card: &RaceCard) -> String {
         (true, false) => format!(", a race{over}"),
         (true, true) => String::new(),
     }
+}
+
+// ---- The carnival guide, read from the store on the day it is asked ----
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CarnivalArgs {
+    /// Date as YYYY-MM-DD to read the carnival from. Defaults to today in Australia/Melbourne.
+    pub date: Option<String>,
+    /// One feature race by name, e.g. "Cox Plate" or "Melbourne Cup", to hear about that race
+    /// alone.
+    pub race: Option<String>,
+}
+
+/// A feature's winner, as the result on file has it.
+struct FeatureResult {
+    winner: String,
+    jockey: String,
+    /// The winning margin: the second horse's margin, or the winner's own when a store gives it.
+    margin_lengths: Option<f64>,
+}
+
+impl FeatureResult {
+    fn from_result(r: &trackside_core::RaceResult) -> Option<Self> {
+        let winner = r.placings.iter().find(|p| p.position == 1)?;
+        let margin_lengths = winner
+            .margin_lengths
+            .filter(|m| *m > 0.0)
+            .or_else(|| {
+                r.placings
+                    .iter()
+                    .find(|p| p.position == 2)
+                    .and_then(|p| p.margin_lengths)
+            })
+            .filter(|m| *m > 0.0);
+        Some(Self {
+            winner: winner.horse.clone(),
+            jockey: winner.jockey.clone(),
+            margin_lengths,
+        })
+    }
+
+    /// "won by Sample Stayer, ridden by J. Example, by half a length".
+    fn words(&self) -> String {
+        let ridden = if self.jockey.trim().is_empty() {
+            String::new()
+        } else {
+            format!(", ridden by {}", self.jockey.trim())
+        };
+        let by = self
+            .margin_lengths
+            .map(|m| format!(", by {}", margin_words(m)))
+            .unwrap_or_default();
+        format!("won by {}{ridden}{by}", self.winner)
+    }
+}
+
+/// Where one feature race stands on a given day.
+struct FeatureStatus {
+    feature: trackside_core::FeatureRace,
+    /// "run", "today", "ahead" (fields out) or "fields_not_out".
+    status: &'static str,
+    /// The venue as the day's meetings name it, or the guide's own name for it.
+    venue: String,
+    /// The feature's place on the published card, once it is out.
+    race_number: Option<u32>,
+    runners: Option<usize>,
+    start_local: Option<String>,
+    jump: Option<Start>,
+    result: Option<FeatureResult>,
+}
+
+impl FeatureStatus {
+    fn days_to_go(&self, today: NaiveDate) -> i64 {
+        (self.feature.date - today).num_days()
+    }
+
+    /// Whether anything said comes from the store (a field or a result) rather than the guide.
+    fn quotes_store(&self) -> bool {
+        self.result.is_some() || self.runners.is_some()
+    }
+
+    /// " Fields are out: 14 runners, jumping at 5:05 pm." for a race ahead, " It's race 9,
+    /// with 14 runners, jumping at 5:05 pm, due to jump in about 25 minutes." on the day.
+    fn field_words(&self) -> String {
+        let Some(n) = self.runners else {
+            return if self.status == "today" {
+                String::new()
+            } else {
+                " Fields aren't out yet.".into()
+            };
+        };
+        let at = self
+            .jump
+            .as_ref()
+            .and_then(Start::short)
+            .map(|t| format!(", jumping at {t}"))
+            .unwrap_or_default();
+        let runners = format!("{n} runner{}", if n == 1 { "" } else { "s" });
+        if self.status == "today" {
+            let relative = self.jump.as_ref().map(Start::relative).unwrap_or_default();
+            let race = self
+                .race_number
+                .map(|r| format!("race {r}, with "))
+                .unwrap_or_default();
+            format!(" It's {race}{runners}{at}{relative}.")
+        } else {
+            format!(" Fields are out: {runners}{at}.")
+        }
+    }
+
+    /// The one or two sentences about this race alone, in the tense its date calls for.
+    fn said(&self, today: NaiveDate) -> String {
+        let f = &self.feature;
+        let name = with_article(f.name);
+        match self.status {
+            "run" => match &self.result {
+                Some(r) => format!(
+                    "{}, {name} at {} was {}.",
+                    capitalise(&past_when(f.date, today, true)),
+                    self.venue,
+                    r.words()
+                ),
+                None => format!(
+                    "{} was run at {} {}; I don't have the result on file.",
+                    capitalise(&name),
+                    self.venue,
+                    past_when(f.date, today, true)
+                ),
+            },
+            "today" => format!(
+                "Today is {} day at {}: {}.{}",
+                f.name,
+                self.venue,
+                f.tagline,
+                self.field_words()
+            ),
+            _ => format!(
+                "{} is at {} {}: {}.{}",
+                capitalise(&name),
+                self.venue,
+                ahead_when(f.date, today),
+                f.tagline,
+                self.field_words()
+            ),
+        }
+    }
+
+    fn json(&self, today: NaiveDate) -> serde_json::Value {
+        let f = &self.feature;
+        json!({
+            "name": f.name,
+            "date": f.date,
+            "venue": self.venue,
+            "grade": f.grade,
+            "distance_m": f.distance_m,
+            "blurb": f.blurb,
+            "tagline": f.tagline,
+            "status": self.status,
+            "race_number": self.race_number,
+            "runners": self.runners,
+            "start_local": self.start_local,
+            "jump": self.jump.as_ref().map(Start::json),
+            "days_to_go": (self.status != "run").then(|| self.days_to_go(today)),
+            "result": self.result.as_ref().map(|r| json!({
+                "winner": r.winner,
+                "jockey": r.jockey,
+                "margin_lengths": r.margin_lengths,
+                "margin": r.margin_lengths.map(margin_words),
+            })),
+            "said": self.said(today),
+        })
+    }
+}
+
+impl Trackside {
+    /// Where `feature` stands on `today`, from the store: run (with its result when one is on
+    /// file), today, ahead with its field out, or ahead with no field yet.
+    async fn feature_status(
+        &self,
+        feature: trackside_core::FeatureRace,
+        today: NaiveDate,
+        home: Option<&str>,
+    ) -> Result<FeatureStatus, McpError> {
+        let meetings = self.store.meetings(feature.date).await.map_err(internal)?;
+        let found = feature_card(&meetings, &feature);
+        let result = match found {
+            Some((m, card)) if feature.date <= today => self
+                .store
+                .race_result(feature.date, &m.venue, card.race_number)
+                .await
+                .map_err(internal)?
+                .as_ref()
+                .and_then(FeatureResult::from_result),
+            _ => None,
+        };
+        let days = (feature.date - today).num_days();
+        let field = found.filter(|(_, c)| c.runners.iter().any(|r| !r.scratched));
+        let status = if result.is_some() || days < 0 {
+            "run"
+        } else if days == 0 {
+            "today"
+        } else if field.is_some() {
+            "ahead"
+        } else {
+            "fields_not_out"
+        };
+        let live = field.filter(|_| status != "run");
+        Ok(FeatureStatus {
+            venue: found
+                .map(|(m, _)| m.venue.clone())
+                .unwrap_or_else(|| feature.venue.to_string()),
+            race_number: found.map(|(_, c)| c.race_number),
+            runners: live.map(|(_, c)| c.runners.iter().filter(|r| !r.scratched).count()),
+            start_local: live
+                .map(|(_, c)| c.start_local.clone())
+                .filter(|s| !s.trim().is_empty()),
+            jump: live.map(|(m, c)| self.start(feature.date, &c.start_local, &m.state, home)),
+            status,
+            result,
+            feature,
+        })
+    }
+}
+
+/// The feature's race on its day's cards: by name (exactly, then within a sponsored name at
+/// its venue), else the one Group 1 at its venue over its distance.
+fn feature_card<'a>(
+    meetings: &'a [Meeting],
+    f: &trackside_core::FeatureRace,
+) -> Option<(&'a Meeting, &'a RaceCard)> {
+    let name = norm(f.name);
+    let races = || {
+        meetings
+            .iter()
+            .flat_map(|m| m.races.iter().map(move |r| (m, r)))
+    };
+    let at_venue = || races().filter(|(m, _)| venue_matches(&m.venue, f.venue));
+    if let Some(found) = races().find(|(_, r)| norm(&r.name) == name) {
+        return Some(found);
+    }
+    if let Some(found) =
+        at_venue().find(|(_, r)| format!(" {} ", norm(&r.name)).contains(&format!(" {name} ")))
+    {
+        return Some(found);
+    }
+    let group_one = |grade: &str| matches!(norm(grade).replace(' ', "").as_str(), "group1" | "g1");
+    let mut by_shape =
+        at_venue().filter(|(_, r)| r.distance_m == Some(f.distance_m) && group_one(&r.grade));
+    match (by_shape.next(), by_shape.next()) {
+        (Some(one), None) => Some(one),
+        _ => None,
+    }
+}
+
+/// A winning margin as a race caller says it: "a nose", "a head", "half a length", "2.3
+/// lengths".
+fn margin_words(m: f64) -> String {
+    match m {
+        m if m < 0.08 => "a nose".into(),
+        m if m < 0.15 => "a short head".into(),
+        m if m < 0.25 => "a head".into(),
+        m if m < 0.4 => "a neck".into(),
+        m if m < 0.65 => "half a length".into(),
+        m if m < 0.9 => "three-quarters of a length".into(),
+        m if m < 1.15 => "a length".into(),
+        m => {
+            let s = format!("{m:.1}");
+            format!("{} lengths", s.trim_end_matches(".0"))
+        }
+    }
+}
+
+/// A day still to come: "tomorrow, Saturday 24 October", "this Saturday, 24 October, 4 days
+/// away", "on Tuesday 3 November, 20 days away".
+fn ahead_when(date: NaiveDate, today: NaiveDate) -> String {
+    match (date - today).num_days() {
+        i64::MIN..=0 => "today".into(),
+        1 => format!("tomorrow, {}", date.format("%A %-d %B")),
+        n @ 2..=6 => format!(
+            "this {}, {}, {n} days away",
+            date.format("%A"),
+            date.format("%-d %B")
+        ),
+        n => format!("on {}, {n} days away", date.format("%A %-d %B")),
+    }
+}
+
+/// A day gone by: "earlier today", "yesterday", "last Saturday" (with its date when `full`),
+/// "on Tuesday 3 November".
+fn past_when(date: NaiveDate, today: NaiveDate, full: bool) -> String {
+    let dated = |s: String| {
+        if full {
+            format!("{s}, {}", date.format("%-d %B"))
+        } else {
+            s
+        }
+    };
+    match (today - date).num_days() {
+        i64::MIN..=0 => "earlier today".into(),
+        1 => dated("yesterday".into()),
+        2..=7 => dated(format!("last {}", date.format("%A"))),
+        _ => format!("on {}", date.format("%A %-d %B")),
+    }
+}
+
+/// "One", "Two" ... for a count said at the start of a sentence.
+fn count_word(n: usize) -> String {
+    match n {
+        1 => "One".into(),
+        2 => "Two".into(),
+        3 => "Three".into(),
+        4 => "Four".into(),
+        5 => "Five".into(),
+        6 => "Six".into(),
+        n => n.to_string(),
+    }
+}
+
+/// The whole guide in one breath: what is next, the latest result, and how many follow. Once
+/// every feature has been run, each reads in the past tense with its winner.
+fn carnival_words(statuses: &[FeatureStatus], today: NaiveDate) -> String {
+    let source = if statuses.iter().any(FeatureStatus::quotes_store) {
+        format!(" Source: {SOURCE_RACING_AUSTRALIA}.")
+    } else {
+        String::new()
+    };
+    let Some(next_at) = statuses.iter().position(|s| s.status != "run") else {
+        let won: Vec<String> = statuses
+            .iter()
+            .filter_map(|s| s.result.as_ref().map(|r| (s, r)))
+            .enumerate()
+            .map(|(i, (s, r))| {
+                let verb = if i == 0 { " went" } else { "" };
+                format!("{}{verb} to {}", with_article(s.feature.name), r.winner)
+            })
+            .collect();
+        let missing: Vec<String> = statuses
+            .iter()
+            .filter(|s| s.result.is_none())
+            .map(|s| with_article(s.feature.name))
+            .collect();
+        let mut text = format!(
+            "The 2026 Spring Carnival is over: all {} feature races have been run.",
+            statuses.len()
+        );
+        if !won.is_empty() {
+            text.push_str(&format!(" {}.", capitalise(&spoken_list(&won))));
+        }
+        match missing.as_slice() {
+            [] => {}
+            [one] => text.push_str(&format!(
+                " {} was run, but I don't have its result on file.",
+                capitalise(one)
+            )),
+            _ => text.push_str(&format!(
+                " I don't have the results of {} on file.",
+                spoken_list(&missing)
+            )),
+        }
+        text.push_str(if won.is_empty() {
+            " Ask me about any by name."
+        } else {
+            " Ask me about any by name for the rider and margin."
+        });
+        return format!("{text}{source}");
+    };
+    let next = &statuses[next_at];
+    let f = &next.feature;
+    let latest = statuses[..next_at].iter().rev().find(|s| s.status == "run");
+    let lead = if next.status == "today" {
+        format!("Today is {} day at {}", f.name, next.venue)
+    } else {
+        let opener = if latest.is_some() {
+            "Next up is"
+        } else {
+            "The carnival opens with"
+        };
+        format!(
+            "{opener} {} at {} {}",
+            with_article(f.name),
+            next.venue,
+            ahead_when(f.date, today)
+        )
+    };
+    let recent = latest
+        .map(|s| match &s.result {
+            Some(r) => format!(
+                " {} {} was {}.",
+                capitalise(&past_when(s.feature.date, today, false)),
+                with_article(s.feature.name),
+                r.words()
+            ),
+            None => format!(
+                " {} was run {}; I don't have the result on file.",
+                capitalise(&with_article(s.feature.name)),
+                past_when(s.feature.date, today, false)
+            ),
+        })
+        .unwrap_or_default();
+    let after = &statuses[next_at + 1..];
+    let follow = |ask: bool| match after {
+        [] => " It's the last feature of the carnival.".to_string(),
+        [last] => format!(
+            " After that, {} on {} closes the carnival.",
+            with_article(last.feature.name),
+            last.feature.date.format("%A %-d %B")
+        ),
+        [.., last] => format!(
+            " {} more follow, through to {} on {}{}.",
+            count_word(after.len()),
+            with_article(last.feature.name),
+            last.feature.date.format("%A %-d %B"),
+            if ask {
+                "; ask me about any by name"
+            } else {
+                ""
+            }
+        ),
+    };
+    let field = next.field_words();
+    let full = format!(
+        "{lead}: {}.{field}{recent}{}{source}",
+        f.tagline,
+        follow(true)
+    );
+    if word_count(&full) <= 80 {
+        return full;
+    }
+    // A long winner's name and a listener in another time zone can run past one breath: the
+    // tagline and the invitation go first.
+    format!("{lead}.{field}{recent}{}{source}", follow(false))
+}
+
+fn word_count(text: &str) -> usize {
+    text.split_whitespace().count()
 }
