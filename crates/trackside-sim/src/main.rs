@@ -9,7 +9,7 @@
 //!
 //! Routes, all under `/sim` so the simulator can share the MCP server's hostname:
 //! `GET /sim` (the page), `GET /sim/link` and `GET /sim/callback` (account linking),
-//! `GET /sim/api/session`, `POST /sim/api/chat`, `POST /sim/api/unlink`.
+//! `GET /sim/api/session`, `POST /sim/api/chat`, `POST /sim/api/speak`, `POST /sim/api/unlink`.
 //!
 //! Configuration (environment):
 //!
@@ -25,10 +25,13 @@
 //!   server without a token, which suits a local server without auth.
 //! - `TRACKSIDE_SIM_PUBLIC_URL`: the public base URL, when the Host header isn't it
 //! - `TRACKSIDE_SIM_BIND`: local listen address (default `127.0.0.1:8001`)
+//! - `TRACKSIDE_SIM_VOICE`: the Amazon Polly voice that speaks answers (default `Olivia`, en-AU);
+//!   `off` leaves speech to the browser's own voice
 
 mod agent;
 mod link;
 mod mcp;
+mod voice;
 
 use std::sync::Arc;
 
@@ -59,6 +62,7 @@ struct App {
     link: Option<Link>,
     today: Option<String>,
     tools: RwLock<Option<Vec<ToolDef>>>,
+    voice: Option<voice::Voice>,
 }
 
 type Shared = Arc<App>;
@@ -116,6 +120,7 @@ async fn main() -> Result<()> {
         link,
         today: env("TRACKSIDE_SIM_TODAY"),
         tools: RwLock::new(None),
+        voice: voice::Voice::from_env(&aws, env("TRACKSIDE_SIM_VOICE")),
     }));
 
     if on_lambda {
@@ -139,6 +144,7 @@ fn router(app: Shared) -> Router {
         .route("/sim/api/session", get(session))
         .route("/sim/api/unlink", post(unlink))
         .route("/sim/api/chat", post(chat))
+        .route("/sim/api/speak", post(speak))
         .with_state(app)
 }
 
@@ -356,6 +362,45 @@ async fn chat(
         ),
         Err(e) => {
             tracing::error!(error = %format!("{e:#}"), "chat turn failed");
+            error(StatusCode::BAD_GATEWAY, "failed", format!("{e:#}"))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct SpeakRequest {
+    text: String,
+}
+
+/// The answer as MP3 from Amazon Polly, for a signed-in user. 404 when Polly is off, so the
+/// page falls back to the browser's voice.
+async fn speak(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    Json(req): Json<SpeakRequest>,
+) -> Response {
+    let s = Session::from_headers(&headers);
+    if app.link.is_some() && s.access.is_none() && s.refresh.is_none() {
+        return error(
+            StatusCode::UNAUTHORIZED,
+            "link",
+            "Link your Trackside account first.",
+        );
+    }
+    let Some(voice) = &app.voice else {
+        return error(StatusCode::NOT_FOUND, "off", "Polly speech is off.");
+    };
+    match voice.speak(&req.text).await {
+        Ok(mp3) => (
+            [
+                (header::CONTENT_TYPE, "audio/mpeg"),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            mp3,
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::warn!(error = %format!("{e:#}"), "Polly speech failed");
             error(StatusCode::BAD_GATEWAY, "failed", format!("{e:#}"))
         }
     }

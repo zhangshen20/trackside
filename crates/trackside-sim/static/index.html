@@ -278,7 +278,7 @@
     voice = vs.find((v) => v.lang === "en-AU") || vs.find((v) => v.lang.startsWith("en-")) || null;
   }
   if ("speechSynthesis" in window) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
-  function speak(text) {
+  function browserSpeak(text) {
     if (!("speechSynthesis" in window)) { setState("idle"); return; }
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
@@ -286,6 +286,33 @@
     u.onstart = () => setState("speaking");
     u.onend = u.onerror = () => setState("idle");
     speechSynthesis.speak(u);
+  }
+  // Amazon Polly (Olivia, en-AU) speaks answers; the browser's own voice is the fallback.
+  let audio = null;
+  let polly = true;
+  function stopSpeaking() {
+    if (audio) { audio.pause(); audio = null; }
+    if ("speechSynthesis" in window) speechSynthesis.cancel();
+  }
+  async function speak(text) {
+    stopSpeaking();
+    if (!polly) { browserSpeak(text); return; }
+    try {
+      const r = await fetch("/sim/api/speak", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (r.status === 404) polly = false;
+      if (!r.ok) throw new Error("speak " + r.status);
+      const url = URL.createObjectURL(await r.blob());
+      const a = new Audio(url);
+      audio = a;
+      a.onplaying = () => setState("speaking");
+      a.onended = a.onerror = () => { URL.revokeObjectURL(url); if (audio === a) { audio = null; setState("idle"); } };
+      await a.play();
+    } catch (e) {
+      browserSpeak(text);
+    }
   }
 
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -305,7 +332,7 @@
   $("mic").addEventListener("click", () => {
     if (!recog || busy) return;
     if (device.dataset.state === "listening") { recog.stop(); return; }
-    if ("speechSynthesis" in window) speechSynthesis.cancel();
+    stopSpeaking();
     $("q").value = ""; setState("listening");
     try { recog.start(); } catch { /* already started */ }
   });
