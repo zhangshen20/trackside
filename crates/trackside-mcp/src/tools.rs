@@ -696,8 +696,10 @@ impl Trackside {
         let meetings = self.store.meetings(date).await.map_err(internal)?;
         let mut lines = Vec::new();
         let mut engagements = Vec::new();
-        // What happened between the last report and this day, from each horse's form.
-        let since = profile.last_checked.filter(|d| *d < date);
+        // What happened between the last report and this day, from each horse's form. Nothing
+        // to catch up on until a day has passed since the last report.
+        let heard_up_to = date.min(today());
+        let since = profile.last_checked.filter(|d| *d < heard_up_to);
         let mut catch_up = Vec::new();
         if let Some(since) = since {
             let mut heard = Vec::new();
@@ -809,7 +811,6 @@ impl Trackside {
             }
         }
         // The next report starts from here; asking about a future card doesn't move it.
-        let heard_up_to = date.min(today());
         if profile.last_checked.is_none_or(|d| d < heard_up_to) {
             profile.last_checked = Some(heard_up_to);
             self.memory.save(&user, &profile).await.map_err(internal)?;

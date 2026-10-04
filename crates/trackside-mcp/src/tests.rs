@@ -283,8 +283,8 @@ async fn user_token_calls_tools_and_keeps_its_own_stable() {
     )
     .await;
     assert!(
-        spoken(&anns).contains("Sample Stayer runs in race 8 at Caulfield"),
-        "{}",
+        spoken(&anns).starts_with("Sample Stayer runs in race 8 at Caulfield"),
+        "a first look at a future card has nothing to catch up on: {}",
         spoken(&anns)
     );
 }
