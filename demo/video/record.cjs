@@ -35,7 +35,8 @@ function memory(op) {
 }
 
 async function main() {
-  const browser = await chromium.launch();
+  // fonts.conf makes Chromium draw the simulator's system-ui in Inter, like the cards.
+  const browser = await chromium.launch({ env: { ...process.env, FONTCONFIG_FILE: path.join(here, "fonts.conf") } });
   const sim = await browser.newContext({
     viewport: cfg.viewport,
     deviceScaleFactor: cfg.scale,
@@ -133,10 +134,11 @@ async function ask(page, scene) {
     await page.screenshot({ path: file });
     frames.push({ kind, file });
   };
+  await page.mouse.move(0, 0); // park the pointer on the banner so no row shows a hover state
   await page.fill("#q", "");
   await shot("idle");
   const q = scene.ask;
-  const steps = 4;
+  const steps = 10;
   for (let i = 1; i <= steps; i++) {
     await page.fill("#q", q.slice(0, Math.ceil((q.length * i) / steps)));
     await shot("typing");
@@ -166,8 +168,14 @@ async function ask(page, scene) {
   for (const act of scene.then || []) {
     if (act.tap) {
       const app = page.frameLocator('iframe[title="Trackside MCP App"]');
+      const row = app.locator(`[data-horse="${act.tap}"]`).first();
+      await row.scrollIntoViewIfNeeded();
+      await row.hover(); // the row's real :hover state, so the tap reads as an interaction
+      await sleep(250);
+      await shot("hover");
       const before = await page.locator("#trace > div").count();
-      await app.locator(`[data-horse="${act.tap}"]`).first().click();
+      await row.click();
+      await page.mouse.move(0, 0);
       await page.waitForFunction((n) => document.querySelectorAll("#trace > div").length > n, before, { timeout: 60000 });
       await settled(page);
       // The App appends the form below the race card; bring it to the top of the screen.
@@ -175,9 +183,9 @@ async function ask(page, scene) {
       await page.evaluate((top) => {
         const screen = document.getElementById("screen");
         const frame = document.querySelector(".app-frame iframe");
-        screen.scrollTop += frame.getBoundingClientRect().top - screen.getBoundingClientRect().top + top - 14;
+        screen.scrollTop += frame.getBoundingClientRect().top - screen.getBoundingClientRect().top + top + 2;
       }, drawerTop);
-      await sleep(300);
+      await sleep(500);
       await shot("tap");
       log("tapped", act.tap, "→", (await page.locator("#trace > div").last().textContent()).slice(0, 80));
     }

@@ -25,7 +25,7 @@ timeline = json.load(open(os.path.join(work, "timeline.json")))
 # Narration is taken from scenes.json as it stands, so rewording a line needs no re-record.
 _scenes = {s["id"]: s for s in cfg["scenes"]}
 for _t in timeline:
-    for _k in ("narration", "narration_before", "narration_after"):
+    for _k in ("narration", "narration_before", "narration_after", "then", "caption"):
         _t.pop(_k, None)
         if _k in _scenes.get(_t["id"], {}):
             _t[_k] = _scenes[_t["id"]][_k]
@@ -46,6 +46,9 @@ def lines():
             yield f"{s['id']}-answer", "alexa", s["answer"]
         if s.get("narration_after"):
             yield f"{s['id']}-after", "narrator", s["narration_after"]
+        for act in s.get("then") or []:
+            if act.get("say"):
+                yield f"{s['id']}-tap", "narrator", act["say"]
 
 
 def duration(path):

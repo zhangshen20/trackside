@@ -18,6 +18,7 @@ work=${VIDEO_WORK:-$here/work}
 out=${1:-$work/trackside-demo.mp4}
 mkdir -p "$work"
 export VIDEO_WORK=$work
+export FONTCONFIG_FILE=$here/fonts.conf
 export AWS_REGION=${AWS_REGION:-ap-southeast-2}
 export TRACKSIDE_MEMORY_TABLE=${TRACKSIDE_MEMORY_TABLE:-trackside-listeners}
 

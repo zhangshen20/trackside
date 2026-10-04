@@ -1,23 +1,10 @@
 {
   "sim_url": "http://127.0.0.1:8001/sim",
-  "viewport": {
-    "width": 1280,
-    "height": 720
-  },
+  "viewport": { "width": 1280, "height": 720 },
   "scale": 1.5,
   "voices": {
-    "narrator": {
-      "polly": "Matthew",
-      "engine": "neural",
-      "espeak": "en-us+m3",
-      "rate": "106%"
-    },
-    "alexa": {
-      "polly": "Olivia",
-      "engine": "neural",
-      "espeak": "en-gb+f3",
-      "rate": "104%"
-    }
+    "narrator": { "polly": "Matthew", "engine": "neural", "rate": "106%", "espeak": "en-us+m3" },
+    "alexa": { "polly": "Olivia", "engine": "neural", "rate": "104%", "espeak": "en-gb+f3" }
   },
   "scenes": [
     {
@@ -25,69 +12,58 @@
       "type": "sim",
       "reload": true,
       "memory": "forget",
-      "ask": "Who ran home fastest in race 6 at Flemington on Saturday?",
+      "narration_before": "Every spring, Australia stops for a horse race, and nearly every racing app wants to sell you a bet.",
+      "ask": "Who won race 6 at Flemington on Saturday, and who ran home fastest?",
       "expect": "33\\.58"
     },
     {
       "id": "02-title",
       "type": "card",
       "card": "title",
-      "narration": "Racing is Australia's biggest spring sport, and nearly every app about it wants to sell you a bet. Trackside is the mate who knows the form instead: an Alexa Plus add-on, built as an MCP server, that never mentions a price."
+      "narration": "Trackside is the mate who knows the form: an Alexa Plus add-on, built as an MCP server, that never mentions a price."
     },
     {
-      "id": "03-follow",
+      "id": "03-racecard",
       "type": "sim",
-      "ask": "Follow The Next Episode.",
-      "narration_after": "Trackside remembers your stable between sessions."
+      "reload": true,
+      "ask": "Show me race 4 at Muswellbrook today.",
+      "expect": "Denman",
+      "narration_after": "On screen, Trackside draws its own answers: this race card is an MCP App served by the Trackside server, with a form strip and where the field usually settles.",
+      "then": [ { "tap": "Hellcibell", "say": "Tap a horse, and the App fetches its form through the host." } ]
     },
     {
-      "id": "04-later",
+      "id": "04-follow",
+      "type": "sim",
+      "ask": "Follow Hellcibell.",
+      "expect": "^(?![\\s\\S]*(let you know|notify|alert))[\\s\\S]*follow"
+    },
+    {
+      "id": "05-later",
       "type": "card",
       "card": "later",
-      "narration": "Three days later."
+      "caption": false,
+      "narration": "Days later, in a new conversation."
     },
     {
-      "id": "05-stable",
+      "id": "06-stable",
       "type": "sim",
       "reload": true,
-      "memory": "last-checked:2026-10-01",
+      "memory": "last-checked:2026-09-20",
       "ask": "How's my stable?",
-      "expect": "since you last",
-      "narration_after": "That memory lives in DynamoDB, keyed by your account, so days later Trackside opens with what you missed. Say 'forget me' and it's gone."
+      "expect": "since you last|Tamworth",
+      "narration_after": "Trackside keeps that memory in DynamoDB against each listener's account, so days later it opens with what you missed. Say 'forget me' and it's gone."
     },
     {
-      "id": "06-racecard",
-      "type": "sim",
-      "reload": true,
-      "ask": "Show me race 4 at Warwick Farm tomorrow.",
-      "expect": "Drinkwise",
-      "narration_after": "On a screen, Trackside draws its own answers: this race card is an MCP App served by the Trackside server, with a form strip and where each horse usually settles. Tap a horse, and the App calls the server for its form.",
-      "then": [
-        {
-          "tap": "Storm Season",
-          "at": 0.62
-        }
-      ]
-    },
-    {
-      "id": "07-run",
-      "type": "sim",
-      "reload": true,
-      "ask": "Who won the Turnbull Stakes, race 8 at Flemington on Saturday?",
-      "expect": "Cosmic Crusader",
-      "narration_after": "Official sectional timing turns a result into a story: who ran home fastest, and from where."
-    },
-    {
-      "id": "08-arch",
+      "id": "07-arch",
       "type": "card",
       "card": "arch",
-      "narration": "Under the hood: Rust on an arm64 Lambda behind API Gateway. Streamable HTTP, and OAuth 2.1 with PKCE through Cognito, as Alexa Plus asks. Racing Australia data is rebuilt twice a day into a snapshot on S3, memory lives in DynamoDB, and Claude on Bedrock plays Alexa Plus in the simulator. One CloudFormation stack, open source under MIT."
+      "narration": "Under the hood: Rust on Lambda behind API Gateway, speaking MCP over Streamable HTTP, with OAuth 2.1 through Cognito, as Alexa Plus requires. Racing Australia results and sectionals become one snapshot on S3, twice a day. Memory sits in DynamoDB, and Claude on Bedrock plays Alexa Plus in the simulator. One CloudFormation stack, open source under MIT."
     },
     {
-      "id": "09-close",
+      "id": "08-close",
       "type": "card",
       "card": "close",
-      "narration": "Trackside: the form, not the odds. The repo and a test account are in the submission. See you at the Cup."
+      "narration": "Trackside: the form, not the odds. It remembers your horses, draws its own race card, and never mentions a price."
     }
   ]
 }

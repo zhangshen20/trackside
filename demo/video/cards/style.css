@@ -29,4 +29,4 @@ h1 .dot { color: var(--accent); }
 .corner-right { position: absolute; right: 60px; bottom: 120px; font-size: 26px; color: var(--muted); }
 h2 { font-size: 110px; font-weight: 700; letter-spacing: -0.02em; margin: 0; }
 .small { font-size: 36px; color: var(--muted); margin-top: 22px; }
-/* Captions are burnt in along the bottom 110 px, so cards keep that strip clear. */
+/* Captions are burnt in along the bottom 120 px (two lines on simulator scenes, up to three on cards), so cards keep that strip clear. */
