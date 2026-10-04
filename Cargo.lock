@@ -3471,6 +3471,7 @@ dependencies = [
  "chrono-tz",
  "flate2",
  "lambda_runtime",
+ "reqwest",
  "serde_json",
  "tokio",
  "trackside-core",

@@ -134,6 +134,15 @@ Price fluctuations, dividends and pools are never read (the wire types do not de
 
 On AWS the same binary also runs as a scheduled Lambda (`trackside-refresh`, deployed when `HR_ENV` is set): twice a day, after the evening's results and again early with the day's final fields, it rebuilds the snapshot from a fixed start date to four days ahead, uploads it, and recycles the MCP function so new requests see it. Its role can only read the two archive buckets and write `snapshots/` in Trackside's bucket.
 
+Every hour the same function runs a health probe (`trackside-snapshot --probe` runs it locally). It checks four things:
+
+- the public `/mcp` endpoint refuses a request with no token and points at its sign-in metadata;
+- that metadata, Cognito's discovery document and Cognito's keys are all served;
+- `/sim` loads;
+- the snapshot is under 26 hours old.
+
+CloudWatch alarms fire if the refresh or the probe fails, the probe stops running, the MCP function errors, or the API returns 5xx. Set `ALERT_EMAIL` when you run `deploy/deploy.sh` to have the alarms emailed, through an SNS topic.
+
 ## Licence
 
 MIT. See `LICENSE`.
