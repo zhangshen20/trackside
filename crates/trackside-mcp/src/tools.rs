@@ -235,13 +235,50 @@ fn going_records(records: &[(&str, &Record)]) -> String {
     }
 }
 
-/// "Flemington in VIC: 10 races, track Good 4, first race 12:35."
+/// A published start time said aloud: Racing Australia writes "4:25PM" and "5:00PM", the
+/// fixture "15:40"; a listener hears "4:25 pm", "5 pm" and "3:40 pm". Anything else is read
+/// as written.
+pub(crate) fn spoken_time(t: &str) -> String {
+    let t = t.trim();
+    let upper = t.to_ascii_uppercase();
+    let (clock, half) = if let Some(c) = upper.strip_suffix("PM") {
+        (c.trim(), Some("pm"))
+    } else if let Some(c) = upper.strip_suffix("AM") {
+        (c.trim(), Some("am"))
+    } else {
+        (upper.as_str(), None)
+    };
+    let Some((h, m)) = clock.split_once(':') else {
+        return t.to_string();
+    };
+    let (Ok(h), Ok(m)) = (h.parse::<u32>(), m.parse::<u32>()) else {
+        return t.to_string();
+    };
+    if h > 23 || m > 59 {
+        return t.to_string();
+    }
+    let (hour, half) = match half {
+        Some(half) => (h, half),
+        None if h == 0 => (12, "am"),
+        None if h < 12 => (h, "am"),
+        None if h == 12 => (12, "pm"),
+        None => (h - 12, "pm"),
+    };
+    if m == 0 {
+        format!("{hour} {half}")
+    } else {
+        format!("{hour}:{m:02} {half}")
+    }
+}
+
+/// "Flemington in VIC: 10 races, track Good 4, first race 12:35 pm."
 fn meeting_line(m: &Meeting) -> String {
     let first = m
         .races
         .first()
-        .map(|r| r.start_local.as_str())
-        .unwrap_or("time to be confirmed");
+        .filter(|r| !r.start_local.is_empty())
+        .map(|r| spoken_time(&r.start_local))
+        .unwrap_or_else(|| "time to be confirmed".to_string());
     format!(
         "{} in {}: {} race{}, track {}, first race {}.",
         m.venue,
@@ -367,13 +404,17 @@ impl Trackside {
             .filter(|r| r.scratched)
             .map(|r| r.horse.clone())
             .collect();
+        let jump = if card.start_local.is_empty() {
+            String::new()
+        } else {
+            format!(", jumping at {}", spoken_time(&card.start_local))
+        };
         let mut spoken = format!(
-            "Race {} at {} is {}. {} runners, jumping at {}.",
+            "Race {} at {} is {}. {} runners{jump}.",
             card.race_number,
             args.venue,
             named_race(&card),
-            runners,
-            card.start_local
+            runners
         );
         if !scratched.is_empty() {
             spoken.push_str(&format!(" Scratched: {}.", scratched.join(", ")));
@@ -966,7 +1007,7 @@ impl Trackside {
                             r.race_number,
                             m.venue,
                             in_brackets(&r.name),
-                            r.start_local,
+                            spoken_time(&r.start_local),
                             runner
                                 .barrier
                                 .map(|b| b.to_string())

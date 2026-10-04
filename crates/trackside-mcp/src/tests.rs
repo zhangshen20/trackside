@@ -789,3 +789,22 @@ async fn names_are_found_the_way_they_sound() {
     .await;
     assert_eq!(v["result"]["structuredContent"]["found"], false);
 }
+
+#[test]
+fn start_times_are_said_the_way_a_person_says_them() {
+    for (written, said) in [
+        ("4:25PM", "4:25 pm"),
+        ("5:00PM", "5 pm"),
+        ("11:55AM", "11:55 am"),
+        ("12:05PM", "12:05 pm"),
+        ("15:40", "3:40 pm"),
+        ("17:00", "5 pm"),
+        ("12:00", "12 pm"),
+        ("0:30", "12:30 am"),
+        ("9:15", "9:15 am"),
+        ("TBA", "TBA"),
+        ("", ""),
+    ] {
+        assert_eq!(crate::tools::spoken_time(written), said, "{written}");
+    }
+}
