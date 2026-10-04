@@ -768,7 +768,7 @@ async fn listeners_hear_start_times_in_their_own_clock() {
     .await;
     let text = spoken(&v);
     assert!(
-        text.contains("Eagle Farm in QLD: 1 race, track Good 4, first race 12:10 pm.")
+        text.contains("Eagle Farm in Queensland: 1 race, track Good 4, first race 12:10 pm.")
             && text.contains("Elsewhere: Caulfield."),
         "{text}"
     );
@@ -952,7 +952,7 @@ async fn listeners_can_unfollow_set_a_home_state_and_be_forgotten() {
     )
     .await;
     assert!(
-        spoken(&v).contains("There's no racing in NSW. Flemington in VIC"),
+        spoken(&v).contains("There's no racing in New South Wales. Flemington in Victoria"),
         "{}",
         spoken(&v)
     );
@@ -1132,7 +1132,7 @@ async fn results_say_how_the_race_was_run() {
     .await;
     let text = spoken(&v);
     assert!(
-        text.contains("How it was run: Sample Stayer came from 5th at the 800 and ran its last 600 in 34.9 seconds, according to racing.com sectional timing. Demo Miler ran the fastest last 600, 34.6 seconds, from 9th at the 800 to finish 2nd, according to racing.com sectional timing."),
+        text.contains("How it was run: Sample Stayer came from 5th at the 800 and ran its last 600 in thirty-four point nine seconds, according to racing.com sectional timing. Demo Miler ran the fastest last 600, thirty-four point six seconds, from 9th at the 800 to finish 2nd, according to racing.com sectional timing."),
         "{text}"
     );
     assert_eq!(v["result"]["structuredContent"]["run"][2]["pos_800"], 1);
@@ -1176,7 +1176,7 @@ fn equal_last_600_times_are_equal_fastest() {
     };
     assert_eq!(
         how_it_was_run(&run, Some(&fastest)),
-        " How it was run: Sample Stayer ran the equal-fastest last 600 in the race, 34.6 seconds, according to racing.com sectional timing. Demo Miler ran the equal-fastest last 600, 34.6 seconds, from 9th at the 800 to finish 2nd, according to racing.com sectional timing. Placeholder Prince came from 10th at the 800 to run 3rd."
+        " How it was run: Sample Stayer ran the equal-fastest last 600 in the race, thirty-four point six seconds, according to racing.com sectional timing. Demo Miler ran the equal-fastest last 600, thirty-four point six seconds, from 9th at the 800 to finish 2nd, according to racing.com sectional timing. Placeholder Prince came from 10th at the 800 to run 3rd."
     );
     // One clear fastest time is still just the fastest.
     let fastest = SectionalHighlight {
@@ -1187,7 +1187,7 @@ fn equal_last_600_times_are_equal_fastest() {
     run[1].last_600_s = Some(34.4);
     assert!(
         how_it_was_run(&run, Some(&fastest))
-            .contains("Demo Miler ran the fastest last 600, 34.4 seconds, from 9th at the 800 to finish 2nd, according to"),
+            .contains("Demo Miler ran the fastest last 600, thirty-four point four seconds, from 9th at the 800 to finish 2nd, according to"),
     );
 }
 
@@ -1208,7 +1208,9 @@ async fn form_and_explanations_say_where_horses_settle() {
         "{text}"
     );
     assert!(
-        text.contains("it ran 2nd of 12, 0.8 lengths off the winner, from 9th at the 800"),
+        text.contains(
+            "it ran 2nd of 12, three-quarters of a length off the winner, from 9th at the 800"
+        ),
         "{text}"
     );
     assert_eq!(
@@ -1339,7 +1341,8 @@ async fn names_are_found_the_way_they_sound() {
     )
     .await;
     assert!(
-        spoken(&v).starts_with("Taking Example as J. Example. Jockey J. Example: 1 start: 1 win"),
+        spoken(&v)
+            .starts_with("Taking Example as J. Example. Jockey J. Example: one start for one win."),
         "{}",
         spoken(&v)
     );
@@ -2017,7 +2020,7 @@ async fn after_the_carnival_every_feature_reads_in_the_past_tense() {
     }
     // The Melbourne Cup's card named no race: it was found as the Group 1 over 3200 metres.
     assert_eq!(s["races"][4]["result"]["winner"], "Stayer King");
-    assert_eq!(s["races"][4]["result"]["margin"], "1.2 lengths");
+    assert_eq!(s["races"][4]["result"]["margin"], "a length and a quarter");
 }
 
 #[tokio::test]
@@ -2523,4 +2526,178 @@ async fn explanations_keep_the_stable_out_of_the_facts() {
     assert!(!facts.contains("following"), "{facts}");
     assert!(!facts.contains("Your horse"), "{facts}");
     assert_eq!(s["written_by"], "template");
+}
+
+// ---- plain-speech ----
+
+/// What a voice must never read like a database: a state code, a decimal margin, a stopwatch
+/// time or a bare "m". The same patterns the smoke test checks.
+fn reads_like_a_database(text: &str) -> Option<String> {
+    let words: Vec<&str> = text
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != ':')
+        .filter(|w| !w.is_empty())
+        .collect();
+    let digits = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+    for (i, w) in words.iter().enumerate() {
+        let bare = w.trim_end_matches(['.', ':']);
+        if ["VIC", "NSW", "QLD", "SA", "WA", "TAS", "NT", "ACT"].contains(&bare) {
+            return Some(format!("state code {bare}"));
+        }
+        if let Some((a, b)) = bare.split_once('.') {
+            let next_is_lengths = words.get(i + 1).is_some_and(|n| n.starts_with("length"));
+            if digits(a) && digits(b) && next_is_lengths {
+                return Some(format!("decimal margin {bare}"));
+            }
+        }
+        if let Some((m, s)) = bare.split_once(':') {
+            if digits(m)
+                && s.split_once('.')
+                    .is_some_and(|(a, b)| digits(a) && digits(b))
+            {
+                return Some(format!("stopwatch time {bare}"));
+            }
+        }
+        if digits(bare) && words.get(i + 1) == Some(&"m") {
+            return Some(format!("bare metres after {bare}"));
+        }
+    }
+    None
+}
+
+#[tokio::test]
+async fn results_and_form_are_read_in_plain_speech() {
+    let app = app(false).await;
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call(
+            "race_result",
+            json!({"venue": "Flemington", "race_number": 7, "date": "2026-09-26"}),
+        )),
+    )
+    .await;
+    let text = spoken(&v);
+    for said in [
+        "2nd Demo Miler ridden by A. Rider by three-quarters of a length",
+        "3rd Placeholder Prince ridden by B. Hoop by a length and a quarter.",
+        "The track was rated Good 4. The time was two minutes two point four one.",
+        "ran its last 600 in thirty-four point nine seconds",
+    ] {
+        assert!(text.contains(said), "{said}\n{text}");
+    }
+    assert_eq!(reads_like_a_database(&text), None, "{text}");
+    // Screens keep the figures.
+    let result = &v["result"]["structuredContent"]["result"];
+    assert_eq!(result["winning_time"], "2:02.41");
+    assert_eq!(result["placings"][1]["margin_lengths"], 0.8);
+
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("horse_form", json!({"horse": "Demo Miler"}))),
+    )
+    .await;
+    let text = spoken(&v);
+    for said in [
+        "Career record: 5 wins from 14 starts, with 3 seconds and 2 thirds.",
+        "First-up, meaning first run back from a spell, 1 win from 3.",
+        "over 2000 metres on a good track, rated Good 4, it ran 2nd of 12, three-quarters of a length off the winner",
+        "on a soft track, rated Soft 5, it ran 4th of 10, two lengths off the winner",
+    ] {
+        assert!(text.contains(said), "{said}\n{text}");
+    }
+    assert_eq!(reads_like_a_database(&text), None, "{text}");
+
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("horse_form", json!({"horse": "Sample Stayer"}))),
+    )
+    .await;
+    let text = spoken(&v);
+    assert!(text.contains(" it won by "), "{text}");
+    assert!(!text.contains("lengths clear"), "{text}");
+    assert_eq!(reads_like_a_database(&text), None, "{text}");
+
+    // A one-start record reads as a sentence and carries no strike rate.
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call(
+            "jockey_or_trainer_stats",
+            json!({"name": "J. Example", "role": "jockey"}),
+        )),
+    )
+    .await;
+    let text = spoken(&v);
+    assert!(
+        text.contains("J. Example: one start for one win."),
+        "{text}"
+    );
+    assert!(!text.contains("percent"), "{text}");
+}
+
+#[tokio::test]
+async fn states_are_said_by_name() {
+    let app = app(false).await;
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("list_meetings", json!({"date": "2026-10-17"}))),
+    )
+    .await;
+    let text = spoken(&v);
+    assert!(text.contains("Caulfield in Victoria: 1 race"), "{text}");
+    assert!(text.contains("Eagle Farm in Queensland: 1 race"), "{text}");
+    assert_eq!(reads_like_a_database(&text), None, "{text}");
+    // The screen keeps the code.
+    assert_eq!(
+        v["result"]["structuredContent"]["meetings"][0]["state"],
+        "VIC"
+    );
+
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("set_home_state", json!({"state": "nt"}))),
+    )
+    .await;
+    assert_eq!(
+        spoken(&v),
+        "Got it. I'll read meetings in the Northern Territory first from now on."
+    );
+    assert_eq!(v["result"]["structuredContent"]["home_state"], "NT");
+
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("carnival_guide", json!({}))),
+    )
+    .await;
+    assert_eq!(reads_like_a_database(&spoken(&v)), None, "{}", spoken(&v));
+}
+
+#[test]
+fn the_database_check_catches_what_it_should() {
+    assert!(reads_like_a_database("Caulfield in VIC: 1 race").is_some());
+    assert!(reads_like_a_database("by 0.8 lengths").is_some());
+    assert!(reads_like_a_database("Time 1:08.24.").is_some());
+    assert!(reads_like_a_database("over 1200 m on a good track").is_some());
+    assert!(
+        reads_like_a_database("South Australia, Washington, SAS, 34.9 seconds, 12:10 pm").is_none()
+    );
 }

@@ -214,6 +214,18 @@ if grep -q '"forget_me"' <<<"$TOOLS"; then
   check "forget_me clears the smoke subject" "$(call forget_me '{}')" "$answered and r['result']['structuredContent']['forgotten'] is True"
 fi
 
+# Plain speech: spoken text says states by name, margins in lengths and halves, times in words
+# and metres in full, never "VIC", "0.8 lengths", "2:02.41" or "1200 m". Fixture only: the
+# deployed server speaks the older figures until it is redeployed. "Racing NSW" and "Racing SA"
+# are bodies named as a sectional source, not state codes, so they are taken out first.
+if [[ -n "$FIXTURE" ]]; then
+  plain='"result" in r and not re.search(r"\b(VIC|NSW|QLD|SA|WA|TAS|NT|ACT)\b|\d\.\d+ lengths|\d:\d\d\.\d\d|\b\d+ m\b", re.sub(r"Racing (NSW|SA)\b", "", text))'
+  check "race_result speaks plainly" "$(call race_result "{\"venue\":\"$RESULT_VENUE\",\"race_number\":$RESULT_RACE,\"date\":\"$RESULT_DATE\"}")" \
+    "$answered and $plain and 'The time was ' in text"
+  check "horse_form speaks plainly" "$(call horse_form "{\"horse\":\"$HORSE\"}")" "$answered and $plain and 'Career record: ' in text"
+  check "list_meetings speaks plainly" "$(call list_meetings "{\"date\":\"$DATE\"}")" "$answered and $plain and 'in Victoria' in text"
+fi
+
 # OAuth, when the caller brought a token.
 status() { curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "$@"; }
 if [[ -n "${MCP_TOKEN:-}" ]]; then

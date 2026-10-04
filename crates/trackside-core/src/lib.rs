@@ -6,6 +6,7 @@
 
 pub mod model;
 pub mod names;
+pub mod spoken;
 pub mod store;
 pub mod time;
 
