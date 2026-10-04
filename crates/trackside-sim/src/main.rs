@@ -308,7 +308,25 @@ fn today(app: &App) -> String {
                 .with_timezone(&chrono_tz::Australia::Melbourne)
                 .date_naive()
         });
-    date.format("%A %-d %B %Y (%Y-%m-%d)").to_string()
+    calendar(date)
+}
+
+/// Today plus the fortnight around it, so the model maps "last Saturday" or "on Friday" to a
+/// date by lookup rather than by arithmetic, which it gets wrong.
+fn calendar(today: chrono::NaiveDate) -> String {
+    let days = (-7..=7)
+        .filter(|&d| d != 0)
+        .map(|d| {
+            let day = today + chrono::Duration::days(d);
+            day.format("%A %-d %B = %Y-%m-%d").to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!(
+        "{} ({}). The week either side: {days}",
+        today.format("%A %-d %B %Y"),
+        today.format("%Y-%m-%d")
+    )
 }
 
 async fn chat(
@@ -403,5 +421,21 @@ async fn speak(
             tracing::warn!(error = %format!("{e:#}"), "Polly speech failed");
             error(StatusCode::BAD_GATEWAY, "failed", format!("{e:#}"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::calendar;
+    use chrono::NaiveDate;
+
+    #[test]
+    fn calendar_names_last_saturday() {
+        let sunday = NaiveDate::from_ymd_opt(2026, 9, 27).unwrap();
+        let text = calendar(sunday);
+        assert!(text.starts_with("Sunday 27 September 2026 (2026-09-27)"));
+        assert!(text.contains("Saturday 26 September = 2026-09-26"));
+        assert!(text.contains("Saturday 3 October = 2026-10-03"));
+        assert!(!text.contains("2026-09-19"));
     }
 }

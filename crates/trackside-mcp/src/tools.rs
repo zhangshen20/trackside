@@ -479,13 +479,27 @@ impl Trackside {
             .await
             .map_err(internal)?
         else {
-            return Ok(answer(
+            let day = date.format("%A %-d %B");
+            let meetings = self.store.meetings(date).await.map_err(internal)?;
+            let text = if meetings
+                .iter()
+                .any(|m| venue_matches(&m.venue, &args.venue))
+            {
                 format!(
-                    "No result yet for race {} at {} on {}.",
-                    args.race_number, args.venue, date
-                ),
-                json!({ "found": false }),
-            ));
+                    "No result yet for race {} at {} on {day}.",
+                    args.race_number, args.venue
+                )
+            } else if meetings.is_empty() {
+                format!("I don't have any racing on file for {day}.")
+            } else {
+                let venues: Vec<&str> = meetings.iter().map(|m| m.venue.as_str()).collect();
+                format!(
+                    "There was no meeting at {} on {day}. Racing that day was at {}.",
+                    args.venue,
+                    venues.join(", ")
+                )
+            };
+            return Ok(answer(text, json!({ "found": false, "date": date })));
         };
         // Voice reads the placegetters; the full finishing order stays in structured content.
         let placings = result
