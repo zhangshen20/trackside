@@ -110,11 +110,12 @@ fn fold_results_into_form(
                     } else {
                         String::new()
                     },
-                    last_600_s: r
-                        .fastest_last_600
-                        .as_ref()
-                        .filter(|s| norm(&s.horse) == norm(&p.horse))
-                        .map(|s| s.last_600_s),
+                    last_600_s: p.last_600_s.or_else(|| {
+                        r.fastest_last_600
+                            .as_ref()
+                            .filter(|s| norm(&s.horse) == norm(&p.horse))
+                            .map(|s| s.last_600_s)
+                    }),
                     pos_800: None,
                     pos_400: None,
                 },
@@ -427,6 +428,7 @@ fn race_result(
                     horse,
                     jockey: rider(listed.map(|x| x.jockey.as_str()), &r.rider_driver_name),
                     margin_lengths: s.and_then(|s| s.margin_l).filter(|_| position != 1),
+                    last_600_s: s.and_then(|s| s.last_600_s).filter(|t| *t > 0.0),
                 })
             })
             .collect(),
@@ -447,6 +449,7 @@ fn race_result(
                         .unwrap_or_else(|| clean_horse(&s.horse_name)),
                     jockey: listed.map(|x| x.jockey.clone()).unwrap_or_default(),
                     margin_lengths: s.margin_l.filter(|_| position != 1),
+                    last_600_s: s.last_600_s.filter(|t| *t > 0.0),
                 })
             })
             .collect(),
@@ -645,6 +648,15 @@ mod tests {
             ("Miss Spacegirl", 34.01)
         );
         assert_eq!(fastest.source, "Racing NSW");
+        assert_eq!(
+            r.placings
+                .iter()
+                .find(|p| p.horse == "Miss Spacegirl")
+                .unwrap()
+                .last_600_s,
+            Some(34.01),
+            "each runner keeps its own last 600"
+        );
 
         assert_eq!(reports[0].results, 1);
         assert!(reports[0].warnings.is_empty(), "{:?}", reports[0].warnings);

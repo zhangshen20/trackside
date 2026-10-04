@@ -74,6 +74,17 @@
   .start { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; gap: 10px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
   .fin { font-weight: 700; font-variant-numeric: tabular-nums; }
   .fin.win { color: var(--gold); }
+  .map { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 4px 0 14px; }
+  .lane { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px; min-height: 64px; }
+  .lane span { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
+  .lane .nos { display: flex; flex-wrap: wrap; gap: 4px; }
+  .lane b { width: 24px; height: 24px; border-radius: 6px; display: grid; place-items: center; font-size: 12px; background: var(--text); color: var(--bg); }
+  .lane.leader { border-color: var(--turf); }
+  .runs { display: grid; gap: 4px; margin: 4px 0 10px; }
+  .runline { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: center; font-size: 13px; padding: 4px 2px; border-bottom: 1px solid var(--line); }
+  .runline .move { font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
+  .runline .move b { color: var(--text); }
+  .runline .move.up b { color: var(--turf); }
   .drawer { margin-top: 14px; border-top: 2px solid var(--line); padding-top: 14px; }
   .muted { color: var(--muted); }
   .skeleton { height: 46px; border-radius: var(--radius); background: linear-gradient(90deg, var(--panel-2), var(--panel), var(--panel-2)); background-size: 200% 100%; animation: shimmer 1.2s linear infinite; margin-bottom: 6px; }
@@ -181,6 +192,7 @@
       <div class="eyebrow">Race ${esc(c.race_number)} · ${esc(s.venue)} · ${esc(day(s.date))}</div>
       <h1>${esc(c.name)}</h1>
       <div class="chips">${chips}</div>
+      ${speedMap(c, s.run_styles || {})}
       <div class="field">${(c.runners || []).map((r) => `
         <button class="runner${r.scratched ? " scratched" : ""}" data-horse="${esc(r.horse)}" ${r.scratched ? "disabled" : ""}>
           <span class="no">${esc(r.number)}</span>
@@ -195,7 +207,27 @@
     const args = { venue: s.venue, race_number: c.race_number, date: s.date };
     document.getElementById("explain").onclick = (e) => inline(e.target, "explain_race", args, (r) => `<div class="note">${esc(r.structuredContent.explanation)}</div>`);
     document.getElementById("result").onclick = (e) => inline(e.target, "race_result", args, (r) =>
-      r.structuredContent.result ? resultBody(r.structuredContent.result) : `<div class="note">${esc(r.content.map((x) => x.text).join(" "))}</div>`);
+      r.structuredContent.result ? resultBody(r.structuredContent.result) + runLines(r.structuredContent.run) : `<div class="note">${esc(r.content.map((x) => x.text).join(" "))}</div>`);
+  }
+
+  // Where each runner has usually settled in its past races (not a prediction).
+  function speedMap(c, styles) {
+    const lanes = [["leader", "Leads"], ["on-pace", "On pace"], ["midfield", "Midfield"], ["back", "Back"]];
+    const runners = (c.runners || []).filter((r) => !r.scratched && styles[r.horse]);
+    if (runners.length < 2) return "";
+    return `<div class="eyebrow" style="margin-bottom:4px">Where they usually settle, from past runs</div><div class="map">${lanes.map(([k, label]) =>
+      `<div class="lane ${k}"><span>${label}</span><div class="nos">${runners.filter((r) => styles[r.horse] === k).map((r) => `<b title="${esc(r.horse)}">${esc(r.number)}</b>`).join("")}</div></div>`).join("")}</div>`;
+  }
+
+  function runLines(run) {
+    const known = (run || []).filter((r) => r.pos_800 || r.last_600_s).slice(0, 6);
+    if (!known.length) return "";
+    return `<h2 style="margin-top:4px">How it was run</h2><div class="runs">${known.map((r) => {
+      const up = r.pos_800 && r.pos_800 > r.position;
+      return `<div class="runline"><span class="name" style="font-weight:600">${esc(r.horse)}</span>
+        <span class="move${up ? " up" : ""}">${r.pos_800 ? `${ord(r.pos_800)} at 800 → <b>${ord(r.position)}</b>` : `<b>${ord(r.position)}</b>`}</span>
+        <span class="meta">${r.last_600_s ? "L600 " + esc(r.last_600_s) + "s" : ""}</span></div>`;
+    }).join("")}</div>`;
   }
 
   async function inline(button, tool, args, draw) {
@@ -226,7 +258,7 @@
   function raceResult(s) {
     const r = s.result;
     app.innerHTML = `<div class="eyebrow">Result · ${esc(day(r.date))}</div><h1>${esc(r.venue)} race ${esc(r.race_number)}</h1>
-      ${resultBody(r)}<div class="drawer" id="drawer" hidden></div>
+      ${resultBody(r)}${runLines(s.run)}<div class="drawer" id="drawer" hidden></div>
       <div class="source">Source: ${esc([].concat(s.source || "Racing Australia").join(", "))} · Tap a horse for its form</div>`;
     wireHorses();
   }
@@ -257,9 +289,9 @@
         <span class="fin${x.finish === 1 ? " win" : ""}">${x.finish ? ord(x.finish) : "–"}${x.starters ? `<span class="meta">/${esc(x.starters)}</span>` : ""}</span>
         <span style="min-width:0"><div class="name" style="font-weight:600">${esc(x.venue)} · ${esc(x.distance_m ? x.distance_m + " m" : "")}</div>
           <div class="who">${[day(x.date), x.condition, x.class && x.class.length <= 30 && x.class].filter(Boolean).map(esc).join(" · ")}</div></span>
-        <span class="meta">${x.margin_lengths != null && x.finish !== 1 ? esc(x.margin_lengths) + " L" : ""}${x.last_600_s ? `<br>L600 ${esc(x.last_600_s)}s` : ""}</span></div>`).join("");
+        <span class="meta">${x.pos_800 ? `${ord(x.pos_800)} at 800<br>` : ""}${x.margin_lengths != null && x.finish !== 1 ? esc(x.margin_lengths) + " L" : ""}${x.last_600_s ? `<br>L600 ${esc(x.last_600_s)}s` : ""}</span></div>`).join("");
     into.innerHTML = `${into === app ? `<div class="eyebrow">Form</div><h1>${esc(f.horse)}</h1>` : `<h2>${esc(f.horse)}</h2>`}
-      <div class="muted" style="margin-bottom:10px">Trained by ${esc(f.trainer)}</div>
+      <div class="muted" style="margin-bottom:10px">Trained by ${esc(f.trainer)}${s.run_style ? ` · <span class="chip turf">${esc(s.run_style.phrase.replace(/^usually /, "Usually "))}</span>` : ""}</div>
       <div class="records">${recs}</div>
       <div class="starts">${starts || '<div class="muted">No recent starts on file.</div>'}</div>
       <div class="actions"><button class="btn" data-follow="${esc(f.horse)}">Follow ${esc(f.horse)}</button></div>

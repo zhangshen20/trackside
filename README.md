@@ -67,9 +67,9 @@ To serve it on your own hostname, run the script once with `TRACKSIDE_DOMAIN=mcp
 | --- | --- |
 | `list_meetings` | meetings on a date, track condition, first race |
 | `get_race_card` | one race's conditions and full field (with the MCP App on screens) |
-| `horse_form` | career and condition records, recent starts, last-600 m times |
-| `explain_race` | what a race is, why it matters, form contenders |
-| `race_result` | placings, margins, time, fastest last 600 m |
+| `horse_form` | career and condition records, recent starts with where it was at the 800, last-600 m times, and where it usually settles |
+| `explain_race` | what a race is, why it matters, the strongest recent form and where the field usually settles |
+| `race_result` | placings, margins, time, and how it was run: where the placegetters were at the 800 and their last 600 m |
 | `jockey_or_trainer_stats` | wins and places over a period |
 | `follow_horse` / `unfollow_horse` / `my_stable` | a stable of followed horses, remembered across sessions: what they've done since you last asked, today's engagements and results |
 | `set_home_state` | read meetings in your state first and in full |
@@ -85,6 +85,14 @@ On a device with a screen, Trackside draws its own answers. The server ships an 
 - **Result**: a podium, margins and the fastest last 600 m. **Stable**: what's new since you last checked, and where your horses run next.
 
 The App is one self-contained HTML file (`crates/trackside-mcp/static/race-card.html`): no network access of its own, so it declares no CSP domains, and it only draws what the tools return. The simulator is an MCP Apps host too: it answers `ui/initialize`, passes the tool result in, relays the App's `tools/call` requests to the MCP server as the linked user, and labels each relayed call in its tool-call panel.
+
+## How the race was run
+
+Trackside reads races the way a race caller does, from sectional data:
+
+- **Results** say how the race unfolded: "Sample Stayer came from 5th at the 800 and ran its last 600 in 34.9 seconds. Demo Miler ran the fastest last 600, 34.6 seconds, from 9th at the 800 to finish 2nd." Each runner's last 600 m comes from state sectional timing; its position at the 800 comes from its Racing Australia form line once that is published.
+- **Form** names where a horse was at the 800 in each recent start and its habit over its last six runs: it usually leads, races on the pace, settles midfield, or settles back and runs on.
+- **Race cards and explanations** group the field by those habits ("On past runs, Placeholder Prince usually leads, and Demo Miler usually settles back in the field"). The MCP App draws it as a map of the field. It describes past runs only and never says how a race will be run.
 
 ## Memory
 

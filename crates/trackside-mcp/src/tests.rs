@@ -593,3 +593,82 @@ async fn screen_tools_point_at_the_mcp_app() {
         assert!(!html.contains(banned), "the app contains {banned}");
     }
 }
+
+#[tokio::test]
+async fn results_say_how_the_race_was_run() {
+    let app = app(false).await;
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call(
+            "race_result",
+            json!({"venue": "Flemington", "race_number": 7, "date": "2026-09-26"}),
+        )),
+    )
+    .await;
+    let text = spoken(&v);
+    assert!(
+        text.contains("How it was run: Sample Stayer came from 5th at the 800 and ran its last 600 in 34.9 seconds. Demo Miler ran the fastest last 600, 34.6 seconds, from 9th at the 800 to finish 2nd, according to racing.com sectional timing."),
+        "{text}"
+    );
+    assert_eq!(v["result"]["structuredContent"]["run"][2]["pos_800"], 1);
+}
+
+#[tokio::test]
+async fn form_and_explanations_say_where_horses_settle() {
+    let app = app(false).await;
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("horse_form", json!({"horse": "Demo Miler"}))),
+    )
+    .await;
+    let text = spoken(&v);
+    assert!(
+        text.contains("In its races it usually settles back in the field and runs on."),
+        "{text}"
+    );
+    assert!(
+        text.contains("it ran 2nd of 12, 0.8 lengths off the winner, from 9th at the 800"),
+        "{text}"
+    );
+    assert_eq!(
+        v["result"]["structuredContent"]["run_style"]["style"],
+        "back"
+    );
+
+    let race = json!({"venue": "Caulfield", "race_number": 8, "date": "2026-10-17"});
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("explain_race", race.clone())),
+    )
+    .await;
+    let text = spoken(&v);
+    assert!(
+        text.contains("On past runs, Placeholder Prince usually leads, and Demo Miler usually settles back in the field."),
+        "{text}"
+    );
+    assert!(
+        !text.contains("1 wins") && !text.contains("ones to watch"),
+        "{text}"
+    );
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("get_race_card", race)),
+    )
+    .await;
+    assert_eq!(
+        v["result"]["structuredContent"]["run_styles"]["Sample Stayer"],
+        "midfield"
+    );
+}
