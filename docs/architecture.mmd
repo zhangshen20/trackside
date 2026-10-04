@@ -1,0 +1,47 @@
+flowchart LR
+    alexa["Alexa+ host<br/>voice in, speech out"]
+    browser["Web simulator page<br/>/sim in a browser, labelled as a simulation"]
+
+    cognito["Amazon Cognito user pool trackside-users<br/>OAuth 2.1 authorization server:<br/>authorization code + PKCE for users (trackside-user),<br/>client credentials for discovery (trackside-service)"]
+
+    apigw["API Gateway HTTP API trackside-mcp<br/>custom domain mcp.racingaidataset.com.au, ACM certificate<br/>routes /mcp and /sim, throttled 10 rps"]
+
+    subgraph lambdas["Three arm64 Lambda functions, Rust on provided.al2023"]
+        mcp["trackside-mcp<br/>MCP server, Streamable HTTP, stateless<br/>12 tools and the race-card MCP App"]
+        simfn["trackside-sim<br/>simulator server: a Claude model plays Alexa+"]
+        refresh["trackside-refresh<br/>snapshot rebuild twice a day, health probe every hour"]
+    end
+
+    s3["S3 bucket trackside-ACCOUNT-REGION<br/>snapshots/latest.json.gz and the Lambda zips"]
+    ddb["DynamoDB table trackside-listeners<br/>followed horses, home state, last stable check"]
+    bedrock["Amazon Bedrock, au. inference profile<br/>Claude: tool choice and answers in the simulator,<br/>race explanations for explain_race"]
+    polly["Amazon Polly<br/>voice Olivia speaks the simulator's answers"]
+    archive["Racing archive buckets, read-only<br/>hr-ENV-gamble and hr-ENV-sectional"]
+
+    events["EventBridge rules<br/>trackside-refresh: cron 12:00 and 20:00 UTC<br/>trackside-probe: every hour"]
+    alarms["CloudWatch alarms<br/>trackside-refresh-or-probe-failed, trackside-probe-silent,<br/>trackside-mcp-errors, trackside-api-5xx"]
+    sns["SNS topic trackside-alerts<br/>email on ALARM and OK"]
+
+    alexa -->|"account linking: sign in, tokens"| cognito
+    browser -->|"Link account: hosted sign-in page"| cognito
+    alexa -->|"MCP over HTTPS with a Bearer token"| apigw
+    browser -->|"GET /sim, POST /sim/api/chat"| apigw
+    apigw -->|"/mcp"| mcp
+    apigw -->|"/sim and /sim/*"| simfn
+    simfn -->|"code exchange with PKCE and client secret"| cognito
+    simfn -->|"tools/call on /mcp as the linked user"| apigw
+    mcp -->|"checks tokens against the pool's keys"| cognito
+    mcp -->|"reads the snapshot at cold start"| s3
+    mcp -->|"GetItem, PutItem, DeleteItem by user"| ddb
+    mcp -->|"Converse: reword explain_race facts"| bedrock
+    simfn -->|"Converse: pick tools, write the answer"| bedrock
+    simfn -->|"SynthesizeSpeech"| polly
+    events -->|"invoke, probe with {probe: true}"| refresh
+    archive -->|"fields, form, results, sectionals"| refresh
+    refresh -->|"PutObject snapshots/latest.json.gz"| s3
+    refresh -->|"UpdateFunctionConfiguration: retire warm instances"| mcp
+    refresh -.->|"hourly probe: 401 challenge, metadata, /sim, snapshot age"| apigw
+    refresh -.->|"Errors and Invocations metrics"| alarms
+    mcp -.->|"Errors metric"| alarms
+    apigw -.->|"5xx metric"| alarms
+    alarms -->|"ALARM and OK"| sns

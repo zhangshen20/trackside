@@ -21,6 +21,10 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: python3 scripts/lint-friction.py
+      - name: Check the docs (links, wording, the AWS service table)
+        run: |
+          bash scripts/check-docs.sh
+          python3 scripts/check-aws-doc.py
 
   # The server as a client sees it: a debug build serves fixtures/demo.json the way Lambda runs
   # (stateless, plain JSON), with its clock fixed on the Wednesday before the fixture's Caulfield
