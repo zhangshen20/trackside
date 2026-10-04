@@ -38,6 +38,11 @@ pub const BOOKMAKER_BRANDS: &[&str] = &[
 /// inside it, and before the brand words.
 pub const WAGERING_PHRASES: &[&str] = &[
     "tote win + 10% in october",
+    "tote win +10% in october",
+    "+ 10% in october",
+    "+10% in october",
+    "new betslip",
+    "place extra",
     "more from tote with",
     "more on tote win",
     "same race multi",
@@ -98,6 +103,13 @@ pub fn venue_name(raw: &str) -> String {
 /// nothing but wagering words comes back empty, and the tools then say "race 2" instead.
 pub fn without_bookmakers(s: &str) -> String {
     let s = without_phrases(s, WAGERING_PHRASES);
+    // A percentage in a race name is what is left of a wagering promotion ("Ladbrokes Tote
+    // Win +10% in October Plate" once the brand and product are gone): it goes too.
+    let s = s
+        .split_whitespace()
+        .filter(|w| !is_percentage(w))
+        .collect::<Vec<_>>()
+        .join(" ");
     let s = s.as_str();
     let is_brand = |w: &str| {
         let bare: String = w
@@ -142,6 +154,12 @@ pub fn without_bookmakers(s: &str) -> String {
     kept.join(" ")
         .trim_matches(|c: char| matches!(c, '-' | ',') || c.is_whitespace())
         .to_string()
+}
+
+/// "+10%", "10%", "+ 10%" once split: a number with a percent sign, and an optional plus.
+fn is_percentage(w: &str) -> bool {
+    let digits = w.trim_start_matches('+').trim_end_matches('%');
+    w.ends_with('%') && !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit() || c == '.')
 }
 
 /// Remove every occurrence of each phrase, whatever its case, when it stands as whole words.

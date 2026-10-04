@@ -234,7 +234,28 @@ pub fn record_words(r: &Record) -> String {
 pub fn race_words(name: &str) -> String {
     let words: Vec<&str> = name.split_whitespace().collect();
     let mut out: Vec<String> = Vec::with_capacity(words.len());
+    // An age shared across an ampersand: "3 & 4YO" is "Three and Four-Year-Old".
+    let shared_age = |i: usize| {
+        let n: Option<u32> = words[i].parse().ok().filter(|n| (2..=9).contains(n));
+        let age_after = words.get(i + 2).is_some_and(|a| {
+            expand(a.trim_end_matches(['.', ',']), false).is_some_and(|e| e.contains("-Year-Old"))
+        });
+        n.filter(|_| words.get(i + 1) == Some(&"&") && age_after)
+    };
+    let mut skip_ampersand = false;
     for (i, w) in words.iter().enumerate() {
+        if skip_ampersand {
+            skip_ampersand = false;
+            out.push("and".to_string());
+            continue;
+        }
+        if let Some(n) = shared_age(i) {
+            let mut said = number_words(n);
+            said[..1].make_ascii_uppercase();
+            out.push(said);
+            skip_ampersand = true;
+            continue;
+        }
         // Keep a trailing full stop or comma ("Group 1. Handicap. 3YO+").
         let core = w.trim_end_matches(['.', ',']);
         let tail = &w[core.len()..];
@@ -379,6 +400,8 @@ mod tests {
     fn race_name_abbreviations_are_written_out() {
         for (short, long) in [
             ("Super MDN PLT", "Super Maiden Plate"),
+            ("3 & 4yo Handicap", "Three and Four-Year-Old Handicap"),
+            ("Pick 3 & Win", "Pick 3 & Win"),
             ("BM64 HCP", "Benchmark 64 Handicap"),
             ("BM 70 Hcap", "Benchmark 70 Handicap"),
             ("CL1 SW", "Class 1 Set Weights"),
