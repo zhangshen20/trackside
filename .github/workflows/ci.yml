@@ -20,3 +20,21 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+
+  # Standalone open-source crates kept in this repository until they move to their own.
+  oss:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: oss/mcp-cognito-auth
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: oss/mcp-cognito-auth
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
