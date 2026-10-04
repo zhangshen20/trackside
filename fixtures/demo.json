@@ -103,6 +103,17 @@
               "rating": 101,
               "last10": "31x114",
               "scratched": false
+            },
+            {
+              "number": 4,
+              "horse": "Late Change",
+              "jockey": "D. Spare",
+              "trainer": "E. Barn",
+              "barrier": 7,
+              "weight_kg": 54.0,
+              "rating": 101,
+              "last10": "x3142",
+              "scratched": true
             }
           ]
         }
@@ -335,6 +346,124 @@
           "last_600_s": 35.9,
           "pos_800": 1,
           "pos_400": 1
+        }
+      ]
+    },
+    {
+      "horse": "Late Change",
+      "trainer": "E. Barn",
+      "career": {
+        "starts": 9,
+        "wins": 2,
+        "seconds": 1,
+        "thirds": 2
+      },
+      "first_up": {
+        "starts": 2,
+        "wins": 1,
+        "seconds": 0,
+        "thirds": 0
+      },
+      "second_up": {
+        "starts": 2,
+        "wins": 0,
+        "seconds": 1,
+        "thirds": 0
+      },
+      "good": {
+        "starts": 6,
+        "wins": 2,
+        "seconds": 1,
+        "thirds": 1
+      },
+      "soft": {
+        "starts": 3,
+        "wins": 0,
+        "seconds": 0,
+        "thirds": 1
+      },
+      "heavy": {
+        "starts": 0,
+        "wins": 0,
+        "seconds": 0,
+        "thirds": 0
+      },
+      "starts": [
+        {
+          "date": "2026-09-19",
+          "venue": "Caulfield",
+          "distance_m": 2000,
+          "condition": "Good 4",
+          "class": "Group 3",
+          "finish": 2,
+          "starters": 11,
+          "margin_lengths": 0.3,
+          "jockey": "D. Spare",
+          "weight_kg": 55.0,
+          "barrier": 5,
+          "time": "",
+          "last_600_s": 34.9,
+          "pos_800": 4,
+          "pos_400": 3
+        }
+      ]
+    },
+    {
+      "horse": "Spare Part",
+      "trainer": "F. Yard",
+      "career": {
+        "starts": 6,
+        "wins": 1,
+        "seconds": 1,
+        "thirds": 1
+      },
+      "first_up": {
+        "starts": 2,
+        "wins": 0,
+        "seconds": 1,
+        "thirds": 0
+      },
+      "second_up": {
+        "starts": 2,
+        "wins": 1,
+        "seconds": 0,
+        "thirds": 0
+      },
+      "good": {
+        "starts": 4,
+        "wins": 1,
+        "seconds": 1,
+        "thirds": 0
+      },
+      "soft": {
+        "starts": 2,
+        "wins": 0,
+        "seconds": 0,
+        "thirds": 1
+      },
+      "heavy": {
+        "starts": 0,
+        "wins": 0,
+        "seconds": 0,
+        "thirds": 0
+      },
+      "starts": [
+        {
+          "date": "2026-10-03",
+          "venue": "Sandown",
+          "distance_m": 1600,
+          "condition": "Soft 5",
+          "class": "Benchmark 78",
+          "finish": 5,
+          "starters": 10,
+          "margin_lengths": 2.6,
+          "jockey": "G. Hoop",
+          "weight_kg": 56.5,
+          "barrier": 9,
+          "time": "",
+          "last_600_s": 35.4,
+          "pos_800": 7,
+          "pos_400": 7
         }
       ]
     }

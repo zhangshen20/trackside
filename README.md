@@ -38,7 +38,7 @@ cargo run --release -p trackside-snapshot -- --from 2026-09-22 --to 2026-09-29 -
 TRACKSIDE_SNAPSHOT=snapshot.json.gz cargo run --release -p trackside-mcp
 ```
 
-`TRACKSIDE_STATELESS=1` runs the server the way Lambda does (no sessions, JSON responses).
+`TRACKSIDE_STATELESS=1` runs the server the way Lambda does (no sessions, JSON responses). `TRACKSIDE_TODAY=2026-10-14` fixes the server's clock on the Wednesday before the fixture's Caulfield Cup card, so a stable report says "runs on Saturday" whatever day you try it (local runs only; the deployed server's data is live).
 
 The simulator, against that local server (needs AWS credentials that can call Bedrock):
 
@@ -71,7 +71,7 @@ To serve it on your own hostname, run the script once with `TRACKSIDE_DOMAIN=mcp
 | `explain_race` | what a race is, why it matters, the strongest recent form and where the field usually settles |
 | `race_result` | placings, margins, time, and how it was run: where the placegetters were at the 800 and their last 600 m |
 | `jockey_or_trainer_stats` | wins and places over a period |
-| `follow_horse` / `unfollow_horse` / `my_stable` | a stable of followed horses, remembered across sessions: what they've done since you last asked, today's engagements and results |
+| `follow_horse` / `unfollow_horse` / `my_stable` | a stable of followed horses, remembered across sessions: what they've done since you last asked, today's engagements and results, and where each horse runs next ("runs on Saturday in the Caulfield Cup, race 8 at Caulfield at 5 pm, barrier 4") |
 | `set_home_state` | read meetings in your state first and in full |
 | `forget_me` | delete everything Trackside remembers about you |
 | `carnival_guide` | the 2026 Spring Racing Carnival feature races |

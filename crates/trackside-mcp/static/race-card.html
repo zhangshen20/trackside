@@ -315,13 +315,17 @@
   function stable(s) {
     const eng = s.engagements || [];
     const caught = s.catch_up || [];
+    const up = s.upcoming || [];
+    // Where a horse not engaged on the day runs next: "Next: Caulfield R8 Sat 17 Oct at 17:00".
+    const next = (h) => { const u = up.find((x) => x.horse === h); if (!u) return "Not engaged" + (s.date ? " " + esc(day(s.date)) : "");
+      return `${u.scratched ? "Scratched from" : "Next:"} ${esc(u.venue)} R${esc(u.race_number)} ${esc(day(u.date))}${u.start_local && !u.scratched ? " at " + esc(u.start_local) : ""}${u.race_name ? " · " + esc(u.race_name) : ""}`; };
     app.innerHTML = `<div class="eyebrow">My stable${s.remembered ? " · remembered across sessions" : ""}</div><h1>${s.stable.length} horse${s.stable.length === 1 ? "" : "s"} followed</h1>
       ${s.since ? `<h2>Since you last checked, ${esc(day(s.since))}</h2><div class="starts" style="margin-bottom:12px">${caught.map((c) => `<div class="start">
         <span class="fin${c.finish === 1 ? " win" : ""}">${c.finish ? ord(c.finish) : "–"}</span>
         <span style="min-width:0"><div class="name" style="font-weight:600">${esc(c.horse)}</div><div class="who">${[day(c.date), c.venue, c.distance_m && c.distance_m + " m", c.condition].filter(Boolean).map(esc).join(" · ")}</div></span><span></span></div>`).join("") || '<div class="muted">None of your horses have raced since.</div>'}</div>` : ""}
       <div class="field">${s.stable.map((h) => { const e = eng.filter((x) => x.horse === h);
         return `<button class="runner" data-horse="${esc(h)}"><span class="no">${esc(h[0] || "?")}</span><span style="min-width:0"><div class="name">${esc(h)}</div>
-          <div class="who">${e.length ? e.map((x) => `${esc(x.venue)} R${esc(x.race_number)}${x.start_local ? " at " + esc(x.start_local) : ""}${x.finished ? " · " + ord(x.finished) : ""}`).join("; ") : "Not engaged" + (s.date ? " " + esc(day(s.date)) : "")}</div></span><span class="meta">Form ›</span></button>`; }).join("")}</div>
+          <div class="who">${e.length ? e.map((x) => `${esc(x.venue)} R${esc(x.race_number)}${x.start_local ? " at " + esc(x.start_local) : ""}${x.scratched ? " · scratched" : ""}${x.finished ? " · " + ord(x.finished) : ""}`).join("; ") : next(h)}</div></span><span class="meta">Form ›</span></button>`; }).join("")}</div>
       <div class="drawer" id="drawer" hidden></div>`;
     wireHorses();
   }

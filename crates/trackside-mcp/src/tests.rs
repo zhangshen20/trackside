@@ -14,8 +14,14 @@ use tower::ServiceExt;
 
 use crate::auth::Auth;
 use crate::build_app;
+use crate::clock::FixedClock;
 use crate::memory::{InMemory, Memory, Profile};
 use trackside_core::FixtureStore;
+
+/// Every test runs on Wednesday 14 October 2026, Melbourne time: three days before the
+/// fixture's Caulfield Cup card and after its Flemington results, so "today", "since you
+/// last checked" and "runs on Saturday" come out the same whatever day the tests run.
+const TEST_NOW: &str = "2026-10-13T22:00:00Z";
 
 const ISSUER: &str = "https://cognito-idp.ap-southeast-2.amazonaws.com/ap-southeast-2_test";
 
@@ -69,8 +75,18 @@ async fn app_with_memory(with_auth: bool, memory: Arc<dyn Memory>) -> axum::Rout
     } else {
         None
     };
+    let clock = Arc::new(FixedClock(TEST_NOW.parse().unwrap()));
     // As on Lambda: stateless, and no localhost-only Host check.
-    build_app(store, memory, None, auth, true, true, Default::default())
+    build_app(
+        store,
+        memory,
+        None,
+        clock,
+        auth,
+        true,
+        true,
+        Default::default(),
+    )
 }
 
 async fn send(
@@ -422,6 +438,89 @@ async fn stable_catches_up_on_runs_since_the_last_check() {
     assert_eq!(
         memory.load("local").await.unwrap().last_checked,
         Some("2026-10-04".parse().unwrap())
+    );
+}
+
+/// On the Wednesday before the Caulfield Cup, following a horse says when it runs next, and
+/// the stable report names each horse's next run instead of only its last start.
+#[tokio::test]
+async fn the_stable_looks_ahead_to_each_horses_next_run() {
+    let app = app(false).await;
+    let (_, _, followed) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("follow_horse", json!({"horse": "Sample Stayer"}))),
+    )
+    .await;
+    let text = spoken(&followed);
+    assert!(
+        text.ends_with("Sample Stayer runs on Saturday in the Caulfield Cup, race 8 at Caulfield at 5 pm, barrier 4, with J. Example up; ask me after the race and I'll tell you how it went."),
+        "{text}"
+    );
+    assert_eq!(
+        followed["result"]["structuredContent"]["next"]["date"],
+        "2026-10-17"
+    );
+    // A scratching is said as one, and nobody is asked to come back after the race.
+    let (_, _, scratched) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("follow_horse", json!({"horse": "Late Change"}))),
+    )
+    .await;
+    let text = spoken(&scratched);
+    assert!(
+        text.ends_with("Late Change has been scratched from the Caulfield Cup, race 8 at Caulfield on Saturday."),
+        "{text}"
+    );
+    // A horse with nothing in the fields keeps its last start.
+    send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("follow_horse", json!({"horse": "Spare Part"}))),
+    )
+    .await;
+    let (_, _, report) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("my_stable", json!({}))),
+    )
+    .await;
+    let text = spoken(&report);
+    assert!(
+        text.starts_with("Sample Stayer runs on Saturday in the Caulfield Cup, race 8 at Caulfield at 5 pm, barrier 4, with J. Example up. Late Change has been scratched from the Caulfield Cup, race 8 at Caulfield on Saturday. Spare Part isn't engaged on 14 Oct or in any field through 18 Oct; last start it ran 5th at Sandown on 3 Oct."),
+        "{text}"
+    );
+    let upcoming = &report["result"]["structuredContent"]["upcoming"];
+    assert_eq!(upcoming.as_array().map(Vec::len), Some(2), "{upcoming}");
+    assert_eq!(upcoming[0]["horse"], "Sample Stayer");
+    assert_eq!(upcoming[0]["race_number"], 8);
+    assert_eq!(upcoming[1]["scratched"], true);
+    // On the day itself the engagement is said as before, and the scratching too.
+    let (_, _, day) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("my_stable", json!({"date": "2026-10-17"}))),
+    )
+    .await;
+    let text = spoken(&day);
+    assert!(
+        text.contains("Late Change has been scratched from race 8 at Caulfield (Caulfield Cup)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Spare Part isn't engaged on 17 Oct or in any field through 21 Oct"),
+        "{text}"
     );
 }
 

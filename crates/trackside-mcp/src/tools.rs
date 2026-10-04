@@ -3,8 +3,7 @@
 
 use std::sync::Arc;
 
-use chrono::{NaiveDate, Utc};
-use chrono_tz::Australia::Melbourne;
+use chrono::{Days, NaiveDate};
 use rmcp::{
     handler::server::wrapper::Parameters, model::*, schemars, service::RequestContext, tool,
     tool_handler, tool_router, ErrorData as McpError, RoleServer, ServerHandler,
@@ -13,16 +12,22 @@ use serde::Deserialize;
 use serde_json::json;
 
 use trackside_core::{
-    horse_key, looks_like_track_code, prize_total, run_style, spoken_money, spring_carnival_2026,
-    venue_matches, Meeting, RaceCard, Record, RunStyle, SectionalHighlight, Store,
-    SOURCE_RACING_AUSTRALIA, SOURCE_SECTIONALS,
+    engagements_in, horse_key, looks_like_track_code, prize_total, run_style, spoken_money,
+    spring_carnival_2026, venue_matches, Engagement, Meeting, RaceCard, Record, RunStyle,
+    SectionalHighlight, Store, SOURCE_RACING_AUSTRALIA, SOURCE_SECTIONALS,
 };
 
 use trackside_core::{names, HorseForm};
 
 use crate::auth::Caller;
+use crate::clock::Clock;
 use crate::memory::{Memory, Profile};
 use crate::summary::Summariser;
+
+/// How many days past the asked date a stable report looks for each horse's next run.
+/// Racing Australia publishes fields two to three days ahead, so four days covers every
+/// field that exists.
+const LOOK_AHEAD_DAYS: u64 = 4;
 
 #[derive(Clone)]
 pub struct Trackside {
@@ -32,6 +37,8 @@ pub struct Trackside {
     memory: Arc<dyn Memory>,
     /// Rewords `explain_race` for the ear when Bedrock is configured (see `summary.rs`).
     summariser: Option<Arc<Summariser>>,
+    /// Where "today" comes from (see `clock.rs`).
+    clock: Arc<dyn Clock>,
 }
 
 /// Whose profile a request reads: the OAuth subject when the server checks tokens, or one
@@ -135,17 +142,61 @@ fn app_meta() -> MetaObject {
     )
 }
 
-fn parse_date(s: &Option<String>) -> Result<NaiveDate, McpError> {
-    match s {
-        None => Ok(Utc::now().with_timezone(&Melbourne).date_naive()),
-        Some(text) => NaiveDate::parse_from_str(text, "%Y-%m-%d").map_err(|_| {
-            McpError::invalid_params(format!("date must be YYYY-MM-DD, got {text}"), None)
-        }),
+/// The date a listener asked about, or `today` when they named none.
+fn parse_date(s: &Option<String>, today: NaiveDate) -> Result<NaiveDate, McpError> {
+    match s.as_deref() {
+        None => Ok(today),
+        Some(text) => parse_ymd(text),
     }
 }
 
 fn parse_opt_date(s: &Option<String>) -> Result<Option<NaiveDate>, McpError> {
-    s.as_ref().map(|_| parse_date(s)).transpose()
+    s.as_deref().map(parse_ymd).transpose()
+}
+
+fn parse_ymd(text: &str) -> Result<NaiveDate, McpError> {
+    NaiveDate::parse_from_str(text, "%Y-%m-%d")
+        .map_err(|_| McpError::invalid_params(format!("date must be YYYY-MM-DD, got {text}"), None))
+}
+
+/// "today", "tomorrow", or the weekday ("on Saturday") for a day within the week after `from`.
+fn relative_day(date: NaiveDate, from: NaiveDate) -> String {
+    match (date - from).num_days() {
+        0 => "today".into(),
+        1 => "tomorrow".into(),
+        2..=6 => format!("on {}", date.format("%A")),
+        _ => format!("on {}", date.format("%A %-d %B")),
+    }
+}
+
+/// One horse's next run as a stable report says it, dated relative to `from`:
+/// "runs on Saturday in the Caulfield Cup, race 8 at Caulfield at 5 pm, barrier 4, with
+/// J. Example up", or that it has been scratched.
+fn next_run_words(e: &Engagement, from: NaiveDate) -> String {
+    let when = relative_day(e.date, from);
+    let race = if e.race_name.is_empty() {
+        format!("race {} at {}", e.race_number, e.venue)
+    } else {
+        format!("the {}, race {} at {}", e.race_name, e.race_number, e.venue)
+    };
+    if e.scratched {
+        return format!("has been scratched from {race} {when}");
+    }
+    let at = if e.start_local.is_empty() {
+        String::new()
+    } else {
+        format!(" at {}", spoken_time(&e.start_local))
+    };
+    let barrier = e
+        .barrier
+        .map(|b| format!(", barrier {b}"))
+        .unwrap_or_default();
+    let rider = if e.jockey.trim().is_empty() {
+        String::new()
+    } else {
+        format!(", with {} up", e.jockey)
+    };
+    format!("runs {when} in {race}{at}{barrier}{rider}")
 }
 
 fn internal(err: anyhow::Error) -> McpError {
@@ -300,12 +351,19 @@ impl Trackside {
         store: Arc<dyn Store>,
         memory: Arc<dyn Memory>,
         summariser: Option<Arc<Summariser>>,
+        clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             store,
             memory,
             summariser,
+            clock,
         }
+    }
+
+    /// Today's date in Melbourne, the racing calendar's day.
+    fn today(&self) -> NaiveDate {
+        self.clock.today()
     }
 
     #[tool(
@@ -319,7 +377,7 @@ impl Trackside {
         ctx: RequestContext<RoleServer>,
         Parameters(args): Parameters<DateArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let date = parse_date(&args.date)?;
+        let date = parse_date(&args.date, self.today())?;
         let mut meetings = self.store.meetings(date).await.map_err(internal)?;
         if let Some(state) = args.state.as_deref() {
             meetings.retain(|m| m.state.eq_ignore_ascii_case(state));
@@ -385,7 +443,7 @@ impl Trackside {
         &self,
         Parameters(mut args): Parameters<RaceArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let date = parse_date(&args.date)?;
+        let date = parse_date(&args.date, self.today())?;
         args.venue = self.resolve_venue(date, &args.venue).await;
         let Some(card) = self
             .store
@@ -574,7 +632,7 @@ impl Trackside {
         &self,
         Parameters(mut args): Parameters<RaceArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let date = parse_date(&args.date)?;
+        let date = parse_date(&args.date, self.today())?;
         args.venue = self.resolve_venue(date, &args.venue).await;
         let Some(card) = self
             .store
@@ -668,7 +726,7 @@ impl Trackside {
         &self,
         Parameters(mut args): Parameters<RaceArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let date = parse_date(&args.date)?;
+        let date = parse_date(&args.date, self.today())?;
         args.venue = self.resolve_venue(date, &args.venue).await;
         let Some(result) = self
             .store
@@ -813,7 +871,7 @@ impl Trackside {
         title = "Follow a horse",
         annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false),
         input_schema = portable::<HorseArgs>(),
-        description = "Follow a horse. Trackside remembers the horses each listener follows across sessions and reports when they are in a field or have run. Use for 'follow Sample Stayer' or 'add it to my stable'."
+        description = "Follow a horse. Trackside remembers the horses each listener follows across sessions, says when the horse runs next, and reports how it went. Use for 'follow Sample Stayer' or 'add it to my stable'."
     )]
     async fn follow_horse(
         &self,
@@ -840,7 +898,8 @@ impl Trackside {
             profile.horses.push(name.clone());
         }
         // The first follow starts the clock for "since you last checked".
-        profile.last_checked.get_or_insert_with(today);
+        let today = self.today();
+        profile.last_checked.get_or_insert(today);
         self.memory.save(&user, &profile).await.map_err(internal)?;
         let n = profile.horses.len();
         let remember = if first && self.memory.durable() {
@@ -848,13 +907,29 @@ impl Trackside {
         } else {
             ""
         };
+        // The horse's next run, when the fields already hold one.
+        let next = self
+            .store
+            .engagements(&name, today, today + Days::new(LOOK_AHEAD_DAYS))
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .next();
+        let coming = match &next {
+            Some(e) if e.scratched => format!(" {name} {}.", next_run_words(e, today)),
+            Some(e) => format!(
+                " {name} {}; ask me after the race and I'll tell you how it went.",
+                next_run_words(e, today)
+            ),
+            None => String::new(),
+        };
         Ok(answer(
             format!(
-                "{}Following {name}. You now follow {n} horse{}.{remember}",
+                "{}Following {name}. You now follow {n} horse{}.{remember}{coming}",
                 heard_note(&heard_as, &name),
                 if n == 1 { "" } else { "s" }
             ),
-            json!({ "found": true, "stable": profile.horses, "remembered": self.memory.durable() }),
+            json!({ "found": true, "stable": profile.horses, "next": next, "remembered": self.memory.durable() }),
         ))
     }
 
@@ -907,14 +982,14 @@ impl Trackside {
         annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = false),
         input_schema = portable::<DateArgs>(),
         meta = app_meta(),
-        description = "The horses the user follows and what's new for them: how they have run since the user last asked (remembered across sessions), today's engagements and results. Use for 'what's happening with my stable', 'any of my horses running today' or 'how did my horses go'."
+        description = "The horses the user follows and what's new for them: how they have run since the user last asked (remembered across sessions), today's engagements and results, and each horse's next run in the coming days. Use for 'what's happening with my stable', 'any of my horses running today', 'when does my horse run next' or 'how did my horses go'."
     )]
     async fn my_stable(
         &self,
         ctx: RequestContext<RoleServer>,
         Parameters(args): Parameters<DateArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let date = parse_date(&args.date)?;
+        let date = parse_date(&args.date, self.today())?;
         let user = caller_key(&ctx);
         let mut profile = self.memory.load(&user).await.map_err(internal)?;
         let stable = profile.horses.clone();
@@ -926,11 +1001,24 @@ impl Trackside {
             ));
         }
         let meetings = self.store.meetings(date).await.map_err(internal)?;
+        // For a day that hasn't passed, the fields for the days after it: where each horse
+        // not engaged on the asked day runs next. A past day's report is about that day.
+        let today = self.today();
+        let look_ahead_to = date + Days::new(LOOK_AHEAD_DAYS);
+        let mut ahead: Vec<Meeting> = Vec::new();
+        if date >= today {
+            let mut day = date + Days::new(1);
+            while day <= look_ahead_to {
+                ahead.extend(self.store.meetings(day).await.map_err(internal)?);
+                day = day + Days::new(1);
+            }
+        }
         let mut lines = Vec::new();
         let mut engagements = Vec::new();
+        let mut upcoming = Vec::new();
         // What happened between the last report and this day, from each horse's form. Nothing
         // to catch up on until a day has passed since the last report.
-        let heard_up_to = date.min(today());
+        let heard_up_to = date.min(today);
         let since = profile.last_checked.filter(|d| *d < heard_up_to);
         let mut catch_up = Vec::new();
         if let Some(since) = since {
@@ -1001,6 +1089,16 @@ impl Trackside {
                             engagements.push(json!({ "horse": horse, "venue": m.venue, "race_number": r.race_number, "start_local": r.start_local, "finished": placing.map(|p| p.position) }));
                             continue;
                         }
+                        if runner.scratched {
+                            lines.push(format!(
+                                "{horse} has been scratched from race {} at {}{}",
+                                r.race_number,
+                                m.venue,
+                                in_brackets(&r.name)
+                            ));
+                            engagements.push(json!({ "horse": horse, "venue": m.venue, "race_number": r.race_number, "start_local": r.start_local, "scratched": true }));
+                            continue;
+                        }
                         lines.push(format!(
                             "{} runs in race {} at {}{} at {}, barrier {}, {} up",
                             horse,
@@ -1018,28 +1116,44 @@ impl Trackside {
                     }
                 }
             }
+            if found {
+                continue;
+            }
+            // Not engaged that day: its next run, when the fields hold one.
+            if let Some(mut e) = engagements_in(&ahead, horse).into_iter().next() {
+                lines.push(format!("{horse} {}", next_run_words(&e, date)));
+                // Named as the listener's stable names it, so a screen can match the two.
+                e.horse = horse.clone();
+                upcoming.push(e);
+                continue;
+            }
             // Horses already covered by the catch-up don't need their last start again.
-            if !found && !catch_up.iter().any(|c| c["horse"] == horse.as_str()) {
-                let last = self
-                    .store
-                    .horse_form(horse)
-                    .await
-                    .map_err(internal)?
-                    .and_then(|f| f.starts.first().cloned());
-                match last {
-                    Some(s) => lines.push(format!(
-                        "{} isn't engaged on {}; last start it {}{} on {}",
-                        horse,
-                        date.format("%-d %b"),
-                        finish_words(s.finish, None),
-                        at_venue(&s.venue),
-                        s.date.format("%-d %b")
-                    )),
-                    None => lines.push(format!(
-                        "{horse} isn't engaged on {}",
-                        date.format("%-d %b")
-                    )),
-                }
+            if catch_up.iter().any(|c| c["horse"] == horse.as_str()) {
+                continue;
+            }
+            let not_engaged = if date >= today {
+                format!(
+                    "{horse} isn't engaged on {} or in any field through {}",
+                    date.format("%-d %b"),
+                    look_ahead_to.format("%-d %b")
+                )
+            } else {
+                format!("{horse} isn't engaged on {}", date.format("%-d %b"))
+            };
+            let last = self
+                .store
+                .horse_form(horse)
+                .await
+                .map_err(internal)?
+                .and_then(|f| f.starts.first().cloned());
+            match last {
+                Some(s) => lines.push(format!(
+                    "{not_engaged}; last start it {}{} on {}",
+                    finish_words(s.finish, None),
+                    at_venue(&s.venue),
+                    s.date.format("%-d %b")
+                )),
+                None => lines.push(not_engaged),
             }
         }
         // The next report starts from here; asking about a future card doesn't move it.
@@ -1049,7 +1163,7 @@ impl Trackside {
         }
         Ok(answer(
             format!("{}. Source: {SOURCE_RACING_AUSTRALIA}.", lines.join(". ")),
-            json!({ "date": date, "stable": stable, "since": since, "catch_up": catch_up, "engagements": engagements, "remembered": self.memory.durable() }),
+            json!({ "date": date, "stable": stable, "since": since, "catch_up": catch_up, "engagements": engagements, "upcoming": upcoming, "remembered": self.memory.durable() }),
         ))
     }
 
@@ -1259,7 +1373,7 @@ impl Trackside {
                 structured,
             );
         }
-        let spoken = match (want_result, date >= today()) {
+        let spoken = match (want_result, date >= self.today()) {
             (true, true) => format!(
                 "Race {race_number} at {} on {day} hasn't been run yet, or its result isn't in.",
                 meeting.venue
@@ -1444,10 +1558,6 @@ fn how_it_was_run(run: &[RunLine], fastest: Option<&SectionalHighlight>) -> Stri
         .map(|f| format!(", according to {}", f.source))
         .unwrap_or_default();
     format!(" How it was run: {}{source}.", said.join(". "))
-}
-
-fn today() -> NaiveDate {
-    Utc::now().with_timezone(&Melbourne).date_naive()
 }
 
 /// "won", "ran 3rd of 12", "ran 5th", or "ran" when the finish isn't known.

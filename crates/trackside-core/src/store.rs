@@ -34,6 +34,27 @@ pub trait Store: Send + Sync {
         to: Option<NaiveDate>,
     ) -> Result<Option<PersonStats>>;
 
+    /// Where `horse` is engaged between `from` and `to` inclusive, soonest first: the fields
+    /// published for those days scanned for its name. Fields come out two to three days
+    /// ahead, so a short window is all a store can answer.
+    async fn engagements(
+        &self,
+        horse: &str,
+        from: NaiveDate,
+        to: NaiveDate,
+    ) -> Result<Vec<Engagement>> {
+        let mut out = Vec::new();
+        let mut day = from;
+        while day <= to {
+            out.extend(engagements_in(&self.meetings(day).await?, horse));
+            match day.succ_opt() {
+                Some(next) => day = next,
+                None => break,
+            }
+        }
+        Ok(out)
+    }
+
     /// Horses whose names sound like `heard`, closest first, for "did you mean". The default
     /// store knows none.
     async fn similar_horses(&self, _heard: &str, _limit: usize) -> Result<Vec<String>> {
