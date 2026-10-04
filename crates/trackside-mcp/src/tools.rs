@@ -128,8 +128,36 @@ fn answer(spoken: String, structured: serde_json::Value) -> CallToolResult {
     result
 }
 
-/// "the Manikato Stakes, a Group 1 race over 1200 metres": grade and class only when known,
-/// so an empty field never leaves a gap in the sentence.
+/// "the Manikato Stakes, a Group 1 race over 1200 metres", or just "a race over 1200 metres"
+/// when the race has no name once its wagering sponsor is removed.
+fn named_race(card: &RaceCard) -> String {
+    if card.name.is_empty() {
+        describe_race(card)
+    } else {
+        format!("the {}, {}", card.name, describe_race(card))
+    }
+}
+
+/// The race's name, or "Race 2 at Flemington" when it has none.
+fn race_title(card: &RaceCard, venue: &str) -> String {
+    if card.name.is_empty() {
+        format!("Race {} at {venue}", card.race_number)
+    } else {
+        card.name.clone()
+    }
+}
+
+/// " (Turnbull Stakes)", or nothing for a race with no name.
+fn in_brackets(name: &str) -> String {
+    if name.is_empty() {
+        String::new()
+    } else {
+        format!(" ({name})")
+    }
+}
+
+/// "a Group 1 race over 1200 metres": grade and class only when known, so an empty field
+/// never leaves a gap in the sentence.
 fn describe_race(card: &RaceCard) -> String {
     let label = if !card.grade.is_empty() {
         card.grade.as_str()
@@ -304,11 +332,10 @@ impl Trackside {
             .map(|r| r.horse.clone())
             .collect();
         let mut spoken = format!(
-            "Race {} at {} is the {}, {}. {} runners, jumping at {}.",
+            "Race {} at {} is {}. {} runners, jumping at {}.",
             card.race_number,
             args.venue,
-            card.name,
-            describe_race(&card),
+            named_race(&card),
             runners,
             card.start_local
         );
@@ -510,14 +537,14 @@ impl Trackside {
         let track = self.track_condition(date, &args.venue).await;
         let styles = self.run_styles(&card).await;
         let pace = pace_sentence(&styles);
+        let title = race_title(&card, &args.venue);
         let template = format!(
-            "{}: {why} Track is {track}. The strongest recent form belongs to {}.{pace}",
-            card.name,
+            "{title}: {why} Track is {track}. The strongest recent form belongs to {}.{pace}",
             spoken_list(&contenders)
         );
         // Bedrock gets the same facts the template uses, plus the field, and nothing else.
         let facts = json!({
-            "race": card.name, "venue": args.venue, "date": date.format("%A %-d %B").to_string(),
+            "race": title, "venue": args.venue, "date": date.format("%A %-d %B").to_string(),
             "race_number": card.race_number, "distance_m": card.distance_m, "grade": card.grade,
             "class": card.class, "prize_total": prize_total(&card.prize).map(spoken_money),
             "why_it_matters": why, "track_condition": track,
@@ -867,21 +894,21 @@ impl Trackside {
                                 _ => "ran unplaced".to_string(),
                             };
                             lines.push(format!(
-                                "{horse} {outcome} in race {} at {} ({}) on {}",
+                                "{horse} {outcome} in race {} at {}{} on {}",
                                 r.race_number,
                                 m.venue,
-                                r.name,
+                                in_brackets(&r.name),
                                 res.date.format("%-d %b")
                             ));
                             engagements.push(json!({ "horse": horse, "venue": m.venue, "race_number": r.race_number, "start_local": r.start_local, "finished": placing.map(|p| p.position) }));
                             continue;
                         }
                         lines.push(format!(
-                            "{} runs in race {} at {} ({}) at {}, barrier {}, {} up",
+                            "{} runs in race {} at {}{} at {}, barrier {}, {} up",
                             horse,
                             r.race_number,
                             m.venue,
-                            r.name,
+                            in_brackets(&r.name),
                             r.start_local,
                             runner
                                 .barrier

@@ -190,7 +190,7 @@
     ].filter(Boolean).join("");
     app.innerHTML = `
       <div class="eyebrow">Race ${esc(c.race_number)} · ${esc(s.venue)} · ${esc(day(s.date))}</div>
-      <h1>${esc(c.name)}</h1>
+      <h1>${esc(c.name || `Race ${c.race_number}`)}</h1>
       <div class="chips">${chips}</div>
       ${speedMap(c, s.run_styles || {})}
       <div class="field">${(c.runners || []).map((r) => `

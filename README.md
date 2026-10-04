@@ -128,7 +128,7 @@ Production data is read, read-only, from an existing daily archive of Racing Aus
 - form for every horse in those fields (latest day wins);
 - results: finishing order and riders from the official results, margins, times and the fastest last 600 m from state sectional timing.
 
-Price fluctuations, dividends and pools are never read (the wire types do not declare them), and wagering brands are removed from race and venue names ("Sportsbet Longreach" is Longreach). The snapshot is not committed: the data is licensed for this use, not for redistribution, so the repository only carries the synthetic demo fixture.
+Price fluctuations, dividends and pools are never read (the wire types do not declare them), and wagering brands and products are removed from race and venue names ("Sportsbet Longreach" is Longreach; "TAB ONE POOL Edward Manifold Stakes" is the Edward Manifold Stakes; a race that was nothing but a sponsor is "race 2"). Racing Australia's fields carry no grade, so Group 1 races are recognised from a list of their names (`GROUP_ONE_RACES` in `crates/trackside-ingest`), with lead-ups, trials and sponsor messages about a race left ungraded. The snapshot is not committed: the data is licensed for this use, not for redistribution, so the repository only carries the synthetic demo fixture.
 
 On AWS the same binary also runs as a scheduled Lambda (`trackside-refresh`, deployed when `HR_ENV` is set): twice a day, after the evening's results and again early with the day's final fields, it rebuilds the snapshot from a fixed start date to four days ahead, uploads it, and recycles the MCP function so new requests see it. Its role can only read the two archive buckets and write `snapshots/` in Trackside's bucket.
 

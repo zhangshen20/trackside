@@ -31,9 +31,27 @@ pub const BOOKMAKER_BRANDS: &[&str] = &[
     "tabcorp",
 ];
 
-/// Remove wagering brands from a race, venue or class name, keeping the rest as written.
-/// Horse and people's names are never passed through this.
+/// Wagering products and promotions that sponsors write into race names ("TAB ONE POOL
+/// Edward Manifold Stakes", "HKJC World Pool Paris Lane Stakes", "MORE ON TOTE WIN
+/// Benchmark 78 Handicap"). Removed whole, longest first, before the brand words.
+pub const WAGERING_PHRASES: &[&str] = &[
+    "tote win + 10% in october",
+    "more from tote with",
+    "more on tote win",
+    "hosted pots",
+    "world pool",
+    "one pool",
+    "tote win",
+    "hkjc",
+    "tote",
+];
+
+/// Remove wagering brands and products from a race, venue or class name, keeping the rest
+/// as written. Horse and people's names are never passed through this. A name that was
+/// nothing but wagering words comes back empty, and the tools then say "race 2" instead.
 pub fn without_bookmakers(s: &str) -> String {
+    let s = without_phrases(s, WAGERING_PHRASES);
+    let s = s.as_str();
     let is_brand = |w: &str| {
         let bare: String = w
             .chars()
@@ -43,7 +61,7 @@ pub fn without_bookmakers(s: &str) -> String {
         BOOKMAKER_BRANDS.contains(&bare.as_str())
     };
     // A brand can also be hyphenated onto a name ("SPORTSBET-BALLARAT"); other hyphens stay.
-    let kept: Vec<String> = s
+    let words: Vec<String> = s
         .split_whitespace()
         .map(|w| {
             w.split('-')
@@ -51,11 +69,49 @@ pub fn without_bookmakers(s: &str) -> String {
                 .collect::<Vec<_>>()
                 .join("-")
         })
-        .filter(|w| !w.trim_matches('-').is_empty())
         .collect();
+    // A dash standing alone stays only between two words that were both kept ("0 - 65
+    // Handicap"); one left over from a brand ("Ladbrokes - Fast Form Plate") goes.
+    let mut kept: Vec<&str> = Vec::with_capacity(words.len());
+    for (i, w) in words.iter().enumerate() {
+        let bare = w.trim_matches('-');
+        if bare.is_empty() {
+            let between = kept.last().is_some_and(|k| !k.trim_matches('-').is_empty())
+                && words[i + 1..]
+                    .first()
+                    .is_some_and(|n| !n.trim_matches('-').is_empty())
+                && i > 0
+                && !words[i - 1].trim_matches('-').is_empty();
+            if between && !w.is_empty() {
+                kept.push(w);
+            }
+            continue;
+        }
+        kept.push(w);
+    }
     kept.join(" ")
-        .trim_matches(|c: char| c == '-' || c == ',' || c.is_whitespace())
+        .trim_matches(|c: char| matches!(c, '-' | ',' | '+' | '&' | ':') || c.is_whitespace())
         .to_string()
+}
+
+/// Remove every occurrence of each phrase, whatever its case, when it stands as whole words.
+fn without_phrases(s: &str, phrases: &[&str]) -> String {
+    let mut out = s.to_string();
+    for phrase in phrases {
+        loop {
+            let lower = out.to_ascii_lowercase();
+            let Some(at) = lower.match_indices(*phrase).map(|(i, _)| i).find(|&i| {
+                let before = lower[..i].chars().next_back();
+                let after = lower[i + phrase.len()..].chars().next();
+                !before.is_some_and(|c| c.is_ascii_alphanumeric())
+                    && !after.is_some_and(|c| c.is_ascii_alphanumeric())
+            }) else {
+                break;
+            };
+            out.replace_range(at..at + phrase.len(), " ");
+        }
+    }
+    out
 }
 
 /// A race meeting on one day at one venue.
@@ -389,6 +445,36 @@ mod tests {
             "Bonus on prizemoney pools for races."
         );
         assert_eq!(without_bookmakers("Tableland Cup"), "Tableland Cup");
+    }
+
+    #[test]
+    fn wagering_products_are_removed_from_race_names() {
+        assert_eq!(
+            without_bookmakers("TAB ONE POOL Edward Manifold Stakes"),
+            "Edward Manifold Stakes"
+        );
+        assert_eq!(
+            without_bookmakers("HKJC World Pool Paris Lane Stakes"),
+            "Paris Lane Stakes"
+        );
+        assert_eq!(
+            without_bookmakers("LADBROKES MORE ON TOTE WIN BENCHMARK 78 Handicap"),
+            "BENCHMARK 78 Handicap"
+        );
+        assert_eq!(
+            without_bookmakers("LADBROKES TOTE WIN + 10% IN OCTOBER BENCHMARK 85 Handicap"),
+            "BENCHMARK 85 Handicap"
+        );
+        assert_eq!(
+            without_bookmakers("MORE FROM TOTE WITH LADBROKES 0 - 65 Handicap"),
+            "0 - 65 Handicap"
+        );
+        assert_eq!(without_bookmakers("TAB ONE POOL"), "");
+        // Whole words only: a horse called Totem or a Pooley Stakes keep their names.
+        assert_eq!(
+            without_bookmakers("Pooley Totem Stakes"),
+            "Pooley Totem Stakes"
+        );
     }
 
     #[test]

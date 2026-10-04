@@ -25,7 +25,7 @@ pub fn meeting_from_fields(json: &str) -> Result<Meeting> {
         .iter()
         .map(|r| RaceCard {
             race_number: r.race_number.max(0) as u32,
-            name: without_bookmakers(&r.race_name),
+            name: race_name(&r.race_name),
             start_local: r.start_local.trim().to_string(),
             distance_m: r.distance_m.and_then(|d| u32::try_from(d).ok()),
             class: without_bookmakers(&r.conditions),
@@ -148,17 +148,173 @@ fn split_condition(s: &str) -> String {
     }
 }
 
+/// The race's name without wagering sponsors. Racing NSW and Queensland publish names in
+/// capitals ("TAB EPSOM"); those are set in title case so a screen shows "Epsom".
+fn race_name(raw: &str) -> String {
+    let name = without_bookmakers(raw);
+    if name.chars().any(|c| c.is_lowercase()) {
+        name
+    } else {
+        title_case(&name)
+    }
+}
+
+/// Australia's Group 1 races, as their names appear once sponsors are removed, lower case
+/// with spaces and punctuation squashed out. The Racing Australia fields file carries no
+/// grade and its conditions text is usually empty, so the name is what there is to go on.
+/// Only Group 1 is listed: a wrong grade is worse than none, and the Group 1 label is the
+/// one a listener asks about ("is the Epsom a Group 1?").
+const GROUP_ONE_RACES: &[&str] = &[
+    // New South Wales
+    "goldenslipper",
+    "doncaster",
+    "queenelizabethstakes",
+    "sydneycup",
+    "tjsmithstakes",
+    "australianderby",
+    "australianoaks",
+    "champagnestakes",
+    "queenoftheturf",
+    "allagedstakes",
+    "rosehillguineas",
+    "ranvetstakes",
+    "georgeryderstakes",
+    "thegalaxy",
+    "vinerystudstakes",
+    "coolmoreclassic",
+    "randwickguineas",
+    "canterburystakes",
+    "chippingnortonstakes",
+    "surroundstakes",
+    "siresproducestakes",
+    "winxstakes",
+    "goldenrose",
+    "epsom",
+    "metropolitan",
+    "flightstakes",
+    "springchampionstakes",
+    "kingcharlesiiistakes",
+    // Victoria
+    "bluediamondstakes",
+    "oakleighplate",
+    "futuritystakes",
+    "cforrstakes",
+    "lightningstakes",
+    "australianguineas",
+    "newmarkethandicap",
+    "australiancup",
+    "williamreidstakes",
+    "memsiestakes",
+    "makybedivastakes",
+    "rupertclarkestakes",
+    "underwoodstakes",
+    "moirstakes",
+    "turnbullstakes",
+    "mightandpowerstakes",
+    "caulfieldguineas",
+    "toorakhandicap",
+    "thousandguineas",
+    "1000guineas",
+    "caulfieldcup",
+    "manikatostakes",
+    "coxplate",
+    "coolmorestudstakes",
+    "victoriaderby",
+    "empirerosestakes",
+    "melbournecup",
+    "vrcoaks",
+    "kennedyoaks",
+    "championsmile",
+    "championssprint",
+    "championsstakes",
+    // Queensland
+    "doomben10000",
+    "doombencup",
+    "kingsfordsmithcup",
+    "stradbrokehandicap",
+    "jjatkins",
+    "queenslandderby",
+    "queenslandoaks",
+    "tattersallstiara",
+    // South Australia and Western Australia
+    "thegoodwood",
+    "robertsangsterstakes",
+    "australasianoaks",
+    "railwaystakes",
+    "winterbottomstakes",
+    "northerlystakes",
+    "kingstontownclassic",
+];
+
+/// Words that make a race named after a Group 1 something else: its lead-up, its trial, a
+/// race on its day, or a sponsor's message about it.
+const NOT_THE_RACE_ITSELF: &[&str] = &[
+    "prelude",
+    "preview",
+    "trial",
+    "qualifier",
+    "heat",
+    "series",
+    "consolation",
+    "day",
+    "eve",
+    "week",
+    "carnival",
+    "season",
+    "tour",
+    "tickets",
+    "sale",
+    "book",
+    "member",
+];
+
+/// The grade a race name or its conditions declare: "Group 1", "G1", "Gr 2", "Listed", or a
+/// name on the Group 1 list.
 fn grade_from(name: &str, conditions: &str) -> String {
     let text = format!("{name} {conditions}").to_ascii_lowercase();
-    for (needle, grade) in [
-        ("group 1", "Group 1"),
-        ("group 2", "Group 2"),
-        ("group 3", "Group 3"),
-        ("listed", "Listed"),
-    ] {
-        if text.contains(needle) {
-            return grade.to_string();
+    let tokens: Vec<&str> = text
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect();
+    for (i, t) in tokens.iter().enumerate() {
+        let next = tokens.get(i + 1).copied().unwrap_or("");
+        let number = match (*t, next) {
+            ("group" | "gr" | "g", "1" | "one") => Some(1),
+            ("group" | "gr" | "g", "2" | "two") => Some(2),
+            ("group" | "gr" | "g", "3" | "three") => Some(3),
+            ("g1" | "gr1", _) => Some(1),
+            ("g2" | "gr2", _) => Some(2),
+            ("g3" | "gr3", _) => Some(3),
+            _ => None,
+        };
+        if let Some(n) = number {
+            return format!("Group {n}");
         }
+        if *t == "listed" || *t == "lr" {
+            return "Listed".to_string();
+        }
+    }
+    let name = without_bookmakers(name).to_ascii_lowercase();
+    let words: Vec<&str> = name
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words.iter().any(|w| NOT_THE_RACE_ITSELF.contains(w)) {
+        return String::new();
+    }
+    // Sponsors come first ("YULONG GOLDEN ROSE"), so the race's own name ends the string, with
+    // or without its generic last word ("Doncaster" and "Doncaster Mile"). A name that only
+    // contains a Group 1's name ("Metropolitan Hotel Maiden Plate") is not that race.
+    let squashed = words.concat();
+    let stem = ["stakes", "handicap", "hcp", "mile"]
+        .iter()
+        .find_map(|w| squashed.strip_suffix(w))
+        .unwrap_or(&squashed);
+    if GROUP_ONE_RACES
+        .iter()
+        .any(|g| squashed.ends_with(g) || stem.ends_with(g))
+    {
+        return "Group 1".to_string();
     }
     String::new()
 }
@@ -243,11 +399,50 @@ mod tests {
                 r.grade.as_str(),
                 r.distance_m
             ),
-            (8, "CAULFIELD CUP", "Group 1", Some(2400))
+            (8, "Caulfield Cup", "Group 1", Some(2400))
         );
         assert_eq!(r.runners[0].horse, "Sample Stayer (NZ)");
         assert_eq!(r.runners[0].rating, Some(108));
         assert!(r.runners[1].scratched);
+    }
+
+    #[test]
+    fn group_ones_are_known_by_name_and_other_grades_by_their_marker() {
+        for (name, conditions, grade) in [
+            ("TAB EPSOM", "", "Group 1"),
+            ("ASAHI SUPER DRY METROPOLITAN", "", "Group 1"),
+            ("TAB Turnbull Stakes", "", "Group 1"),
+            ("Ladbrokes Manikato Stakes", "", "Group 1"),
+            ("YULONG GOLDEN ROSE", "", "Group 1"),
+            ("Penfolds Victoria Derby", "", "Group 1"),
+            ("Lexus Melbourne Cup", "", "Group 1"),
+            ("T J Smith Stakes", "", "Group 1"),
+            ("Sportsbet Caulfield Guineas Prelude", "", ""),
+            ("SAVE THE DATE WARWICK CUP SAT 10 OCT Maiden Plate", "", ""),
+            ("Darley Maribyrnong Trial Stakes", "", ""),
+            ("Howden Super Impose Stakes", "", ""),
+            ("Metropolitan Hotel Maiden Plate", "", ""),
+            ("Doncaster Mile", "", "Group 1"),
+            ("Doomben 10,000", "", "Group 1"),
+            ("Gilgai Stakes", "G2 Open Handicap", "Group 2"),
+            ("Paris Lane Stakes", "3YO+ Gr 3 Set Weights", "Group 3"),
+            ("Heritage Stakes", "LR. Quality", "Listed"),
+        ] {
+            assert_eq!(grade_from(name, conditions), grade, "{name} / {conditions}");
+        }
+        assert_eq!(
+            race_name("TAB ONE POOL Edward Manifold Stakes"),
+            "Edward Manifold Stakes"
+        );
+        assert_eq!(race_name("TAB ONE POOL"), "");
+        assert_eq!(
+            race_name("ARROWFIELD BREEDERS' PLATE"),
+            "Arrowfield Breeders' Plate"
+        );
+        assert_eq!(
+            race_name("Howden Super Impose Stakes"),
+            "Howden Super Impose Stakes"
+        );
     }
 
     #[test]
