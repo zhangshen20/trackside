@@ -170,7 +170,8 @@
   const fmtDate = (d) => { try { return new Date(d + "T00:00:00").toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" }); } catch { return d; } };
   const rec = (r) => r ? `${r.wins}-${r.seconds}-${r.thirds} from ${r.starts}` : "";
 
-  function idle() {
+  async function idle() {
+    await unmount();
     const now = new Date();
     screen.innerHTML = `<div class="idle"><div>
       <div class="clock">${now.toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit" })}</div>
@@ -221,8 +222,10 @@
     },
     explain_race(s) {
       if (!s.race) return null;
+      // The horses with the best recent form, as names or as {horse, ...} facts. Past form only.
+      const formed = (s.strongest_recent_form || s.contenders || []).map((h) => (typeof h === "string" ? h : h && h.horse)).filter(Boolean);
       return `<h2>${esc(s.race)}</h2><p>${esc(s.why)}</p>
-        ${s.contenders && s.contenders.length ? `<div class="sub">Form horses to watch</div><div class="chips" style="justify-content:flex-start">${s.contenders.map((c) => `<button class="chip" data-q="How has ${esc(c)} been going?">${esc(c)}</button>`).join("")}</div>` : ""}`;
+        ${formed.length ? `<div class="sub">Strongest recent form</div><div class="chips" style="justify-content:flex-start">${formed.map((c) => `<button class="chip" data-q="How has ${esc(c)} been going?">${esc(c)}</button>`).join("")}</div>` : ""}`;
     },
     jockey_or_trainer_stats(s) {
       const st = s.stats; if (!st) return null; const r = st.record || {};
@@ -265,6 +268,7 @@
     // provides one, otherwise the page's own card.
     const apps = await loadApps();
     const drawn = [...(reply.tools || [])].reverse().find((t) => !t.is_error && t.structured && (apps[t.tool] || (cards[t.tool] && cards[t.tool](t.structured))));
+    await unmount();
     if (drawn && apps[drawn.tool]) {
       screen.innerHTML = `<div class="card"><p class="spoken">${esc(reply.text)}</p></div>`;
       if (await mountApp(apps[drawn.tool], drawn)) { screen.scrollTop = 0; return; }
@@ -279,17 +283,37 @@
   let appsByTool = null;
   const appHtml = {};
   let mounted = null;
+  let nextHostId = 1;
   async function loadApps() {
     if (appsByTool) return appsByTool;
     try { const r = await fetch("/sim/api/apps"); if (r.ok) appsByTool = await r.json(); } catch { /* use the page's own cards */ }
     return appsByTool || {};
+  }
+  // The App's Content-Security-Policy, from the resource's _meta.ui.csp: inline script and style,
+  // data: images and nothing else unless the server lists connect or resource domains.
+  function appCsp(meta) {
+    const csp = (meta && meta.ui && meta.ui.csp) || {};
+    const list = (xs) => (Array.isArray(xs) ? xs : []).filter((x) => typeof x === "string" && /^[\w.*:/-]+$/.test(x)).join(" ");
+    const connect = list(csp.connectDomains), res = list(csp.resourceDomains);
+    const more = res ? " " + res : "";
+    const rules = ["default-src 'none'", "script-src 'unsafe-inline'" + more, "style-src 'unsafe-inline'" + more, "img-src data:" + more];
+    if (res) rules.push("font-src " + res, "media-src " + res);
+    if (connect) rules.push("connect-src " + connect);
+    return rules.join("; ");
+  }
+  function withCsp(html, meta) {
+    const tag = `<meta http-equiv="Content-Security-Policy" content="${appCsp(meta)}">`;
+    const head = /<head[^>]*>/i.exec(html);
+    const at = head ? head.index + head[0].length : 0;
+    return html.slice(0, at) + tag + html.slice(at);
   }
   async function mountApp(uri, call) {
     try {
       if (!appHtml[uri]) {
         const r = await fetch("/sim/api/ui?uri=" + encodeURIComponent(uri));
         if (!r.ok) return false;
-        appHtml[uri] = (await r.json()).html;
+        const data = await r.json();
+        appHtml[uri] = { html: data.html, meta: data.meta || data._meta || {} };
       }
     } catch { return false; }
     const wrap = document.createElement("div");
@@ -298,11 +322,28 @@
     const frame = document.createElement("iframe");
     frame.setAttribute("sandbox", "allow-scripts");
     frame.setAttribute("title", "Trackside MCP App");
-    frame.srcdoc = appHtml[uri];
+    frame.srcdoc = withCsp(appHtml[uri].html, appHtml[uri].meta);
     wrap.appendChild(frame);
     screen.querySelector(".card").appendChild(wrap);
     mounted = { frame, call };
     return true;
+  }
+  // Tell a mounted App it is about to go (ui/resource-teardown), wait for its answer or half a
+  // second, then let the caller replace the screen.
+  async function unmount() {
+    const m = mounted;
+    const win = m && m.frame.contentWindow;
+    if (win) {
+      const id = nextHostId++;
+      await new Promise((resolve) => {
+        const done = () => { clearTimeout(timer); window.removeEventListener("message", onReply); resolve(); };
+        const onReply = (e) => { if (e.source === win && e.data && e.data.jsonrpc === "2.0" && e.data.id === id) done(); };
+        const timer = setTimeout(done, 500);
+        window.addEventListener("message", onReply);
+        win.postMessage({ jsonrpc: "2.0", id, method: "ui/resource-teardown", params: {} }, "*");
+      });
+    }
+    if (mounted === m) mounted = null;
   }
   const toolResult = (t) => ({ content: [{ type: "text", text: t.text || "" }], structuredContent: t.structured, isError: !!t.is_error });
   window.addEventListener("message", async (e) => {
@@ -465,7 +506,8 @@
     const u = $("unlink");
     if (u) u.addEventListener("click", async () => { await fetch("/sim/api/unlink", { method: "POST" }); linked = false; session.who = null; renderAccount(); idle(); });
   }
-  function renderLinkNeeded(message) {
+  async function renderLinkNeeded(message) {
+    await unmount();
     screen.innerHTML = `<div class="idle"><div><h2 style="margin:0 0 8px">Link your Trackside account</h2>
       <p>${esc(message || "Like enabling an Alexa+ add-on, you sign in once and Trackside keeps your followed horses.")}</p>
       <a class="btn" href="/sim/link">Link account</a></div></div>`;

@@ -68,8 +68,8 @@ struct App {
     link: Option<Link>,
     today: Option<String>,
     tools: RwLock<Option<Vec<ToolDef>>>,
-    /// MCP App HTML by `ui://` URI, read once from the MCP server.
-    apps: RwLock<HashMap<String, String>>,
+    /// MCP App HTML and its resource `_meta` by `ui://` URI, read once from the MCP server.
+    apps: RwLock<HashMap<String, (String, Value)>>,
     voice: Option<voice::Voice>,
 }
 
@@ -443,7 +443,8 @@ struct UiQuery {
     uri: String,
 }
 
-/// An MCP App's HTML, read from the MCP server once and kept.
+/// An MCP App's HTML and its resource `_meta` (the page builds the App's CSP from `ui.csp`),
+/// read from the MCP server once and kept.
 async fn app_html(
     State(app): State<Shared>,
     headers: HeaderMap,
@@ -456,8 +457,8 @@ async fn app_html(
         Ok(t) => t,
         Err(resp) => return resp,
     };
-    if let Some(html) = app.apps.read().await.get(&q.uri).cloned() {
-        return Json(json!({ "uri": q.uri, "html": html })).into_response();
+    if let Some((html, meta)) = app.apps.read().await.get(&q.uri).cloned() {
+        return Json(json!({ "uri": q.uri, "html": html, "meta": meta })).into_response();
     }
     let result = tools
         .with_token(|t| {
@@ -466,15 +467,15 @@ async fn app_html(
             async move { app.mcp.read_app(t.as_deref(), &uri).await }
         })
         .await;
-    if let Ok(html) = &result {
-        app.apps.write().await.insert(q.uri.clone(), html.clone());
+    if let Ok(read) = &result {
+        app.apps.write().await.insert(q.uri.clone(), read.clone());
     }
     let uri = q.uri.clone();
     tools
         .respond(
             &headers,
             "reading an app",
-            result.map(|html| json!({ "uri": uri, "html": html })),
+            result.map(|(html, meta)| json!({ "uri": uri, "html": html, "meta": meta })),
         )
         .await
 }
