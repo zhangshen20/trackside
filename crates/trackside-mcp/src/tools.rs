@@ -18,6 +18,9 @@ use trackside_core::{
     SOURCE_SECTIONALS,
 };
 
+use trackside_core::spoken::{
+    distance_words, going_words, margin_words, race_time_words, race_words, state_name, wins_from,
+};
 use trackside_core::{names, HorseForm};
 
 use crate::auth::Caller;
@@ -271,11 +274,11 @@ fn in_brackets(name: &str) -> String {
 /// never leaves a gap in the sentence.
 fn describe_race(card: &RaceCard) -> String {
     let label = if !card.grade.is_empty() {
-        card.grade.as_str()
+        race_words(&card.grade)
     } else if card.class.len() <= 40 {
-        card.class.as_str()
+        race_words(&card.class)
     } else {
-        ""
+        String::new()
     };
     let kind = match label.chars().next() {
         None => "a race".to_string(),
@@ -284,7 +287,7 @@ fn describe_race(card: &RaceCard) -> String {
     };
     let distance = card
         .distance_m
-        .map(|d| format!(" over {d} metres"))
+        .map(|d| format!(" over {}", distance_words(d)))
         .unwrap_or_default();
     let purse = prize_total(&card.prize)
         .map(|n| format!(", worth {}", spoken_money(n)))
@@ -434,8 +437,23 @@ fn about(minutes: i64) -> String {
     }
 }
 
-fn fmt_len(m: Option<f64>) -> String {
-    m.map(|v| format!("{v:.1} lengths")).unwrap_or_default()
+/// How far a placegetter finished from the winner, as a listener hears it: ", three-quarters
+/// of a length off the winner", ", in a dead heat", or nothing with no margin on file.
+fn behind_words(m: Option<f64>) -> String {
+    match m.map(margin_words).filter(|w| !w.is_empty()) {
+        Some(w) if w == "a dead heat" => ", in a dead heat".into(),
+        Some(w) => format!(", {w} off the winner"),
+        None => String::new(),
+    }
+}
+
+/// How a winner won: "won by a length and a half", "dead-heated for first", or "won".
+fn won_words(m: Option<f64>) -> String {
+    match m.map(margin_words).filter(|w| !w.is_empty()) {
+        Some(w) if w == "a dead heat" => "dead-heated for first".into(),
+        Some(w) => format!("won by {w}"),
+        None => "won".into(),
+    }
 }
 
 #[tool_router]
@@ -518,7 +536,7 @@ impl Trackside {
             .collect::<Vec<_>>()
             .join(" ");
         if let (Some(h), 0) = (&home, home_count) {
-            spoken = format!("There's no racing in {h}. {spoken}");
+            spoken = format!("There's no racing in {}. {spoken}", state_name(h));
         }
         if !others.is_empty() {
             let named = others
@@ -756,7 +774,7 @@ impl Trackside {
             .take(3)
             .map(|s| {
                 let place = match s.finish {
-                    Some(1) => "won".to_string(),
+                    Some(1) => won_words(s.margin_lengths),
                     Some(f) => format!(
                         "ran {}{} of {}",
                         f,
@@ -768,20 +786,18 @@ impl Trackside {
                     None => "ran".to_string(),
                 };
                 let margin = if s.finish == Some(1) {
-                    fmt_len(s.margin_lengths).replace("lengths", "lengths clear")
+                    String::new()
                 } else {
-                    s.margin_lengths
-                        .map(|m| format!("{m:.1} lengths off the winner"))
-                        .unwrap_or_default()
+                    behind_words(s.margin_lengths)
                 };
                 let distance = s
                     .distance_m
-                    .map(|d| format!(" over {d} metres"))
+                    .map(|d| format!(" over {}", distance_words(d)))
                     .unwrap_or_default();
-                let track = if s.condition.is_empty() {
-                    String::new()
-                } else {
-                    format!(" on a {} track", s.condition)
+                let track = match going_words(&s.condition) {
+                    g if g.is_empty() => String::new(),
+                    g if g.contains(',') => format!(" on {g},"),
+                    g => format!(" on {g}"),
                 };
                 // Where it was at the 800 tells how the run unfolded.
                 let settled = match s.pos_800 {
@@ -790,23 +806,17 @@ impl Trackside {
                     _ => String::new(),
                 };
                 format!(
-                    "{}{}{distance}{track} it {}{}{settled}",
+                    "{}{}{distance}{track} it {place}{margin}{settled}",
                     s.date.format("%-d %b"),
                     at_venue(&s.venue),
-                    place,
-                    if margin.is_empty() {
-                        String::new()
-                    } else {
-                        format!(", {margin}")
-                    }
                 )
             })
             .collect::<Vec<_>>()
             .join(". ");
         let first_up = if form.first_up.starts > 0 {
             format!(
-                " First-up {} from {}.",
-                form.first_up.wins, form.first_up.starts
+                " First-up, meaning first run back from a spell, {}.",
+                wins_from(form.first_up.wins, form.first_up.starts)
             )
         } else {
             String::new()
@@ -828,7 +838,7 @@ impl Trackside {
             .unwrap_or_default();
         let following = !followed_in(&self.profile(&ctx).await, [form.horse.as_str()]).is_empty();
         let spoken = format!(
-            "{}{}, trained by {}. Career {}.{first_up}{going}{habit}{recent} Source: {SOURCE_RACING_AUSTRALIA}.{}",
+            "{}{}, trained by {}. Career record: {}.{first_up}{going}{habit}{recent} Source: {SOURCE_RACING_AUSTRALIA}.{}",
             heard_note(&heard_as, &form.horse),
             form.horse,
             form.trainer,
@@ -927,8 +937,9 @@ impl Trackside {
         // Bedrock gets the same facts the template uses, plus the field, and nothing else.
         let facts = json!({
             "race": title, "venue": venue, "date": date.format("%A %-d %B").to_string(),
-            "race_number": card.race_number, "distance_m": card.distance_m, "grade": card.grade,
-            "class": card.class, "prize_total": prize_total(&card.prize).map(spoken_money),
+            "race_number": card.race_number, "distance_m": card.distance_m,
+            "distance": card.distance_m.map(distance_words), "grade": card.grade,
+            "class": race_words(&card.class), "prize_total": prize_total(&card.prize).map(spoken_money),
             "why_it_matters": why, "track_condition": track,
             "feature_race": feature.is_some(),
             "strongest_recent_form": formed.iter().map(|r| json!({
@@ -1008,9 +1019,11 @@ impl Trackside {
                     ordinal(p.position),
                     p.horse,
                     p.jockey,
-                    p.margin_lengths
-                        .map(|m| format!(" by {m:.1} lengths"))
-                        .unwrap_or_default()
+                    match p.margin_lengths.map(margin_words).filter(|w| !w.is_empty()) {
+                        Some(w) if w == "a dead heat" => " in a dead heat".to_string(),
+                        Some(w) => format!(" by {w}"),
+                        None => String::new(),
+                    }
                 )
             })
             .collect::<Vec<_>>()
@@ -1058,19 +1071,19 @@ impl Trackside {
             })
             .collect();
         let spoken = format!(
-            "{note}Race {} at {} on {}: {placings}.{} Time {}.{story} Source: {SOURCE_RACING_AUSTRALIA}.{}",
+            "{note}Race {} at {} on {}: {placings}.{} {}.{story} Source: {SOURCE_RACING_AUSTRALIA}.{}",
             result.race_number,
             result.venue,
             date.format("%-d %B"),
             result
                 .track_condition
                 .as_ref()
-                .map(|t| format!(" Track {t}."))
+                .map(|t| format!(" The track was rated {t}."))
                 .unwrap_or_default(),
-            result
-                .winning_time
-                .clone()
-                .unwrap_or_else(|| "not recorded".into()),
+            match result.winning_time.as_deref() {
+                Some(t) => format!("The time was {}", race_time_words(t)),
+                None => "The time wasn't recorded".to_string(),
+            },
             your_finishers(&yours)
         );
         Ok(answer(
@@ -1130,13 +1143,15 @@ impl Trackside {
                 json!({ "found": false }),
             ));
         };
-        let strike = if stats.record.starts > 0 {
-            100.0 * stats.record.wins as f64 / stats.record.starts as f64
+        // A strike rate means something from five starts; below that the record says it all.
+        let strike = if stats.record.starts >= 5 {
+            let rate = 100.0 * stats.record.wins as f64 / stats.record.starts as f64;
+            format!(", a {rate:.0} percent strike rate")
         } else {
-            0.0
+            String::new()
         };
         let spoken = format!(
-            "{}{} {}: {}, a {strike:.0} percent strike rate. Source: {SOURCE_RACING_AUSTRALIA}.",
+            "{}{} {}: {}{strike}. Source: {SOURCE_RACING_AUSTRALIA}.",
             heard_note(&heard_as, &stats.name),
             capitalise(&role),
             stats.name,
@@ -1600,7 +1615,7 @@ impl Trackside {
                             "The next race{scope} is race {} at {}{}{}, at {}.",
                             first.race.race_number,
                             first.venue,
-                            race_words(&first.race),
+                            named_race_words(&first.race),
                             at.relative(),
                             at_words(&at, home, true),
                         );
@@ -1691,7 +1706,10 @@ impl Trackside {
         profile.home_state = Some(state.clone());
         self.memory.save(&user, &profile).await.map_err(internal)?;
         Ok(answer(
-            format!("Got it. I'll read {state} meetings first from now on."),
+            format!(
+                "Got it. I'll read meetings in {} first from now on.",
+                state_name(&state)
+            ),
             json!({ "home_state": state, "remembered": self.memory.durable() }),
         ))
     }
@@ -1918,7 +1936,7 @@ impl Trackside {
         }
     }
 
-    /// "Flemington in VIC: 10 races, track Good 4, first race 12:35 pm." A listener in
+    /// "Flemington in Victoria: 10 races, track Good 4, first race 12:35 pm." A listener in
     /// another state hears the first race in their own clock as well.
     fn meeting_line(&self, m: &Meeting, home: Option<&str>) -> String {
         let first = m
@@ -1929,7 +1947,7 @@ impl Trackside {
         format!(
             "{} in {}: {} race{}, track {}, first race {}.",
             m.venue,
-            m.state,
+            state_name(&m.state),
             m.races.len(),
             if m.races.len() == 1 { "" } else { "s" },
             m.track_condition.as_deref().unwrap_or("not yet rated"),
@@ -2135,10 +2153,10 @@ pub(crate) struct RunLine {
     pub(crate) story: Option<String>,
 }
 
-/// "34.9", "35.12": seconds as they'd be read.
+/// "thirty-four point nine", "thirty-five point one two": seconds as they'd be read.
 fn secs(t: f64) -> String {
     let s = format!("{t:.2}");
-    s.trim_end_matches('0').trim_end_matches('.').to_string()
+    race_time_words(s.trim_end_matches('0').trim_end_matches('.'))
 }
 
 /// A few spoken sentences on how the race unfolded: how the winner won, who ran home
@@ -2500,7 +2518,7 @@ fn at_words(start: &Start, home: Option<&str>, long: bool) -> String {
 }
 
 /// ", the Caulfield Cup over 2400 metres", ", a race over 1200 metres", or nothing.
-fn race_words(card: &RaceCard) -> String {
+fn named_race_words(card: &RaceCard) -> String {
     let over = card
         .distance_m
         .map(|d| format!(" over {d} metres"))
@@ -2761,24 +2779,6 @@ fn feature_card<'a>(
     match (by_shape.next(), by_shape.next()) {
         (Some(one), None) => Some(one),
         _ => None,
-    }
-}
-
-/// A winning margin as a race caller says it: "a nose", "a head", "half a length", "2.3
-/// lengths".
-fn margin_words(m: f64) -> String {
-    match m {
-        m if m < 0.08 => "a nose".into(),
-        m if m < 0.15 => "a short head".into(),
-        m if m < 0.25 => "a head".into(),
-        m if m < 0.4 => "a neck".into(),
-        m if m < 0.65 => "half a length".into(),
-        m if m < 0.9 => "three-quarters of a length".into(),
-        m if m < 1.15 => "a length".into(),
-        m => {
-            let s = format!("{m:.1}");
-            format!("{} lengths", s.trim_end_matches(".0"))
-        }
     }
 }
 

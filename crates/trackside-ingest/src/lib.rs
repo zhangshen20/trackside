@@ -157,7 +157,9 @@ const WAGERING_WORDS: &[&str] = &[
 ];
 
 /// The race's name without wagering sponsors. Racing NSW and Queensland publish names in
-/// capitals ("TAB EPSOM"); those are set in title case so a screen shows "Epsom".
+/// capitals ("TAB EPSOM"); those are set in title case so a screen shows "Epsom". Word-like
+/// abbreviations are written out ("BM64 HCP" is "Benchmark 64 Handicap", "MDN PLT" "Maiden
+/// Plate", see `spoken::race_words`), so a voice reading the name says words, not letters.
 fn race_name(raw: &str) -> String {
     let name = without_bookmakers(raw);
     let wagering = name.split_whitespace().any(|w| {
@@ -171,11 +173,12 @@ fn race_name(raw: &str) -> String {
     if wagering {
         return String::new();
     }
-    if name.chars().any(|c| c.is_lowercase()) {
+    let cased = if name.chars().any(|c| c.is_lowercase()) {
         name
     } else {
         title_case(&name)
-    }
+    };
+    spoken::race_words(&cased)
 }
 
 /// Australia's Group 1 races, as their names appear once sponsors are removed, lower case
@@ -604,9 +607,6 @@ mod tests {
             ("ATC CUP", "ATC Cup"),
             ("O'BRIEN STAKES", "O'Brien Stakes"),
             ("D'ARCY HANDICAP", "D'Arcy Handicap"),
-            ("3YO MAIDEN PLATE", "3YO Maiden Plate"),
-            ("2YO F&M HANDICAP", "2YO F&M Handicap"),
-            ("BM64 HANDICAP", "BM64 Handicap"),
             (
                 "MCGRATH ESTATE AGENTS HANDICAP",
                 "McGrath Estate Agents Handicap",
@@ -616,11 +616,36 @@ mod tests {
         ] {
             assert_eq!(race_name(raw), cased, "{raw}");
         }
+        // Title case keeps conditions as written; `race_name` then writes them out.
+        assert_eq!(title_case("3YO MAIDEN PLATE"), "3YO Maiden Plate");
+        assert_eq!(title_case("2YO F&M HANDICAP"), "2YO F&M Handicap");
+        assert_eq!(title_case("BM64 HANDICAP"), "BM64 Handicap");
         assert_eq!(title_case("I AM INVINCIBLE"), "I Am Invincible");
         assert_eq!(title_case("Tom MCDONALD"), "Tom McDonald");
         assert_eq!(title_case("JD HAYES"), "JD Hayes");
         assert_eq!(title_case("SOFT5"), "Soft5");
         assert_eq!(title_case("LIV BYRNE"), "Liv Byrne");
+    }
+
+    #[test]
+    fn race_names_write_out_their_abbreviations() {
+        for (raw, name) in [
+            ("SUPER MDN PLT", "Super Maiden Plate"),
+            ("BM64 HCP", "Benchmark 64 Handicap"),
+            ("Sportsbet BM 70 HCAP", "Benchmark 70 Handicap"),
+            ("CL1 PLT", "Class 1 Plate"),
+            ("QLTY STKS", "Quality Stakes"),
+            (
+                "F&M SW+P HCP",
+                "Fillies and Mares Set Weights and Penalties Handicap",
+            ),
+            ("2YO SWP", "Two-Year-Old Set Weights and Penalties"),
+            ("3YO MAIDEN PLATE", "Three-Year-Old Maiden Plate"),
+            ("3YO+ SW", "Three-Year-Old and Upwards Set Weights"),
+            ("Caulfield Cup", "Caulfield Cup"),
+        ] {
+            assert_eq!(race_name(raw), name, "{raw}");
+        }
     }
 
     #[test]

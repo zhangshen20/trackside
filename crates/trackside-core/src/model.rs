@@ -266,27 +266,11 @@ pub struct Record {
     pub thirds: u32,
 }
 
-fn pl(n: u32) -> &'static str {
-    if n == 1 {
-        ""
-    } else {
-        "s"
-    }
-}
-
 impl Record {
+    /// The record as it is said aloud: "5 wins from 14 starts, with 3 seconds and 2 thirds",
+    /// or "one start for one win". Screens read the numbers themselves.
     pub fn summary(&self) -> String {
-        format!(
-            "{} start{}: {} win{}, {} second{}, {} third{}",
-            self.starts,
-            pl(self.starts),
-            self.wins,
-            pl(self.wins),
-            self.seconds,
-            pl(self.seconds),
-            self.thirds,
-            pl(self.thirds)
-        )
+        crate::spoken::record_words(self)
     }
 }
 
@@ -518,10 +502,10 @@ pub fn spring_carnival_2026() -> Vec<FeatureRace> {
     let d = |y, m, d| NaiveDate::from_ymd_opt(y, m, d).expect("valid date");
     vec![
         FeatureRace { name: "Caulfield Guineas", date: d(2026, 10, 10), venue: "Caulfield", grade: "Group 1", distance_m: 1600, blurb: "The premier mile for three-year-olds; a proving ground for future stallions.", tagline: "the premier mile for three-year-olds" },
-        FeatureRace { name: "Caulfield Cup", date: d(2026, 10, 17), venue: "Caulfield", grade: "Group 1", distance_m: 2400, blurb: "Australia's richest handicap over 2400 m and the traditional lead-up to the Melbourne Cup.", tagline: "the 2400 metre handicap that leads to the Melbourne Cup" },
+        FeatureRace { name: "Caulfield Cup", date: d(2026, 10, 17), venue: "Caulfield", grade: "Group 1", distance_m: 2400, blurb: "Australia's richest handicap over 2400 metres and the traditional lead-up to the Melbourne Cup.", tagline: "the 2400 metre handicap that leads to the Melbourne Cup" },
         FeatureRace { name: "Cox Plate", date: d(2026, 10, 24), venue: "Moonee Valley", grade: "Group 1", distance_m: 2040, blurb: "The weight-for-age championship of Australasia, run on the tight Moonee Valley circuit.", tagline: "the weight-for-age championship of Australasia" },
         FeatureRace { name: "Victoria Derby", date: d(2026, 10, 31), venue: "Flemington", grade: "Group 1", distance_m: 2500, blurb: "The classic for three-year-olds that opens Melbourne Cup week.", tagline: "the classic for three-year-olds that opens Cup week" },
-        FeatureRace { name: "Melbourne Cup", date: d(2026, 11, 3), venue: "Flemington", grade: "Group 1", distance_m: 3200, blurb: "The race that stops a nation: a 3200 m handicap run on the first Tuesday of November since 1861.", tagline: "the race that stops a nation" },
+        FeatureRace { name: "Melbourne Cup", date: d(2026, 11, 3), venue: "Flemington", grade: "Group 1", distance_m: 3200, blurb: "The race that stops a nation: a 3200 metre handicap run on the first Tuesday of November since 1861.", tagline: "the race that stops a nation" },
         FeatureRace { name: "VRC Oaks", date: d(2026, 11, 5), venue: "Flemington", grade: "Group 1", distance_m: 2500, blurb: "The fillies' classic on Oaks Day.", tagline: "the fillies' classic" },
         FeatureRace { name: "Champions Stakes", date: d(2026, 11, 7), venue: "Flemington", grade: "Group 1", distance_m: 2000, blurb: "The weight-for-age feature that closes the Flemington carnival.", tagline: "the weight-for-age feature that closes the carnival" },
     ]

@@ -96,7 +96,7 @@ The App is one self-contained HTML file (`crates/trackside-mcp/static/race-card.
 
 Trackside reads races the way a race caller does, from sectional data:
 
-- **Results** say how the race unfolded: "Sample Stayer came from 5th at the 800 and ran its last 600 in 34.9 seconds. Demo Miler ran the fastest last 600, 34.6 seconds, from 9th at the 800 to finish 2nd." Each runner's last 600 m comes from state sectional timing; its position at the 800 comes from its Racing Australia form line once that is published.
+- **Results** say how the race unfolded: "Sample Stayer came from 5th at the 800 and ran its last 600 in thirty-four point nine seconds. Demo Miler ran the fastest last 600, thirty-four point six seconds, from 9th at the 800 to finish 2nd." Each runner's last 600 m comes from state sectional timing; its position at the 800 comes from its Racing Australia form line once that is published.
 - **Form** names where a horse was at the 800 in each recent start and its habit over its last six runs: it usually leads, races on the pace, settles midfield, or settles back and runs on.
 - **Race cards and explanations** group the field by those habits ("On past runs, Placeholder Prince usually leads, and Demo Miler usually settles back in the field"). The MCP App draws it as a map of the field. It describes past runs only and never says how a race will be run.
 
