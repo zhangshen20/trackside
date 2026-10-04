@@ -85,6 +85,23 @@ pub struct PersonArgs {
     pub to: Option<String>,
 }
 
+/// Trackside's MCP App (the MCP Apps extension): one view that draws race cards, results,
+/// form, explanations and a stable from a tool's structured content, and calls the tools back
+/// through the host when a listener taps a horse.
+pub const APP_URI: &str = "ui://trackside/race-card.html";
+pub const APP_MIME: &str = "text/html;profile=mcp-app";
+const APP_HTML: &str = include_str!("../static/race-card.html");
+
+/// Points a tool at the MCP App. `ui/resourceUri` is the key earlier hosts read.
+fn app_meta() -> MetaObject {
+    MetaObject(
+        json!({ "ui": { "resourceUri": APP_URI }, "ui/resourceUri": APP_URI })
+            .as_object()
+            .cloned()
+            .unwrap_or_default(),
+    )
+}
+
 fn parse_date(s: &Option<String>) -> Result<NaiveDate, McpError> {
     match s {
         None => Ok(Utc::now().with_timezone(&Melbourne).date_naive()),
@@ -257,6 +274,7 @@ impl Trackside {
     }
 
     #[tool(
+        meta = app_meta(),
         description = "The race card for one race: name, distance, class, prize and the full field with barriers, jockeys, trainers and weights. Use for 'who is running in race 8 at Caulfield'."
     )]
     async fn get_race_card(
@@ -321,6 +339,7 @@ impl Trackside {
     }
 
     #[tool(
+        meta = app_meta(),
         description = "A horse's form: career record, first-up and track-condition records, and its recent starts with margins and last-600m times. Use for 'how has Sample Stayer been going' or 'has it won on a soft track'."
     )]
     async fn horse_form(
@@ -411,6 +430,7 @@ impl Trackside {
     }
 
     #[tool(
+        meta = app_meta(),
         description = "Explain a race in plain language for a newcomer: what it is, why it matters and which runners bring the strongest form. No betting or prices. Use for 'tell me about the Caulfield Cup' or 'explain race 8'. Given only a race's name, find its venue, date and race number with list_meetings first."
     )]
     async fn explain_race(
@@ -496,6 +516,7 @@ impl Trackside {
     }
 
     #[tool(
+        meta = app_meta(),
         description = "The result of a race: placings, margins, winning time and the fastest last 600 metres from sectional timing. Use for 'who won race 7 at Flemington' or 'who ran the fastest last 600'."
     )]
     async fn race_result(
@@ -675,6 +696,7 @@ impl Trackside {
     }
 
     #[tool(
+        meta = app_meta(),
         description = "The horses the user follows and what's new for them: how they have run since the user last asked (remembered across sessions), today's engagements and results. Use for 'what's happening with my stable', 'any of my horses running today' or 'how did my horses go'."
     )]
     async fn my_stable(
@@ -1014,7 +1036,21 @@ fn capitalise(s: &str) -> String {
 #[tool_handler]
 impl ServerHandler for Trackside {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+        let mut extensions = ExtensionCapabilities::new();
+        extensions.insert(
+            "io.modelcontextprotocol/ui".into(),
+            json!({ "mimeTypes": [APP_MIME] })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+        );
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_extensions_with(extensions)
+                .enable_resources()
+                .enable_tools()
+                .build(),
+        )
             .with_server_info({
                 let mut info = Implementation::from_build_env();
                 info.name = "trackside".into();
@@ -1025,5 +1061,47 @@ impl ServerHandler for Trackside {
                 "Trackside is a form guide for Australian thoroughbred racing: meetings, race cards, horse form, results, sectional timing, jockey and trainer records and a Spring Carnival guide. It remembers each signed-in listener across sessions: the horses they follow, their home state, and what has happened to their horses since they last asked. It is a fan companion with no betting or prices; never ask it for odds or tips. Attribute facts to the source each answer names."
                     .to_string(),
             )
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        Ok(ListResourcesResult::with_all_items(vec![Resource::new(
+            APP_URI,
+            "race-card",
+        )
+        .with_title("Trackside race card")
+        .with_description(
+            "Interactive race card, result, form and stable view for screens (MCP App)",
+        )
+        .with_mime_type(APP_MIME)]))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, McpError> {
+        if request.uri != APP_URI {
+            return Err(McpError::resource_not_found(
+                format!("no resource {}", request.uri),
+                None,
+            ));
+        }
+        // Self-contained: no network access, so no CSP domains to declare.
+        let meta = MetaObject(
+            json!({ "ui": { "prefersBorder": false } })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+        );
+        Ok(
+            ReadResourceResult::new(vec![ResourceContents::text(APP_HTML, APP_URI)
+                .with_mime_type(APP_MIME)
+                .with_meta(meta)])
+            .into(),
+        )
     }
 }

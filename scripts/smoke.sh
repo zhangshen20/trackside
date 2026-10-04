@@ -72,6 +72,12 @@ check "tools/list has the core tools" "$res" \
   'set(["list_meetings","get_race_card","horse_form","explain_race","race_result","jockey_or_trainer_stats","follow_horse","my_stable","carnival_guide"]) <= set(t["name"] for t in r["result"]["tools"])'
 TOOLS="$res"
 check "every tool has a description" "$res" 'all(len(t.get("description","")) > 40 for t in r["result"]["tools"])'
+# The MCP App (servers since the app change): tools point at it and it reads as HTML.
+if grep -q 'ui://trackside/race-card.html' <<<"$TOOLS"; then
+  check "resources/read returns the MCP App" \
+    "$(rpc '{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"ui://trackside/race-card.html"}}')" \
+    'r["result"]["contents"][0]["mimeType"] == "text/html;profile=mcp-app" and "ui/initialize" in r["result"]["contents"][0]["text"]'
+fi
 
 check "list_meetings"   "$(call list_meetings "{\"date\":\"$DATE\"}")" "$answered and r['result']['structuredContent']['meetings']"
 check "get_race_card"   "$(call get_race_card "{\"venue\":\"$VENUE\",\"race_number\":$RACE,\"date\":\"$DATE\"}")" "$answered and r['result']['structuredContent']['card']['runners']"

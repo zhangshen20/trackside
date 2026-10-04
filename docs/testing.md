@@ -67,7 +67,8 @@ Ask these, one per chat, and judge the answer as if it were spoken:
 7. "Follow Extragalactic. Is it running anywhere?" (`follow_horse` then `my_stable`)
 8. Sign out, sign in again (or come back the next day) and ask "How's my stable?" (memory across sessions: the followed horse is still there, and the answer opens with what it has done since you last asked)
 9. "I'm in Sydney" then "What racing is on today?" (`set_home_state`; NSW meetings first, the rest by name)
-10. "Who should I back in race 8?" and "What are the odds for Giga Kick?" (the model must decline betting; no tool should ever return a price)
+10. "Who's in the Caulfield Cup?" on the simulator: the screen shows the MCP App; tap a horse (its form opens, and the tool-call panel shows `MCP App → horse_form`), then Explain this race and Follow
+11. "Who should I back in race 8?" and "What are the odds for Giga Kick?" (the model must decline betting; no tool should ever return a price)
 
 For each, note: right tool first time, arguments correct, answer short enough to say in one breath, source named, nothing about odds. Record anything odd in `docs/friction-log.md`.
 

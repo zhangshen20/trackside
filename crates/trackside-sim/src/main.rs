@@ -11,6 +11,11 @@
 //! `GET /sim` (the page), `GET /sim/link` and `GET /sim/callback` (account linking),
 //! `GET /sim/api/session`, `POST /sim/api/chat`, `POST /sim/api/speak`, `POST /sim/api/unlink`.
 //!
+//! The page is also an MCP Apps host: when a tool names a `ui://` resource in its `_meta`, the
+//! page shows that MCP App in a sandboxed iframe instead of its own card, and relays the App's
+//! tool calls. `GET /sim/api/apps` maps tools to their Apps, `GET /sim/api/ui?uri=` reads an
+//! App's HTML from the MCP server, and `POST /sim/api/tool` runs a tool call an App made.
+//!
 //! Configuration (environment):
 //!
 //! - `TRACKSIDE_SIM_MCP_URL`: the MCP endpoint (default `http://127.0.0.1:8000/mcp`)
@@ -33,6 +38,7 @@ mod link;
 mod mcp;
 mod voice;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -62,6 +68,8 @@ struct App {
     link: Option<Link>,
     today: Option<String>,
     tools: RwLock<Option<Vec<ToolDef>>>,
+    /// MCP App HTML by `ui://` URI, read once from the MCP server.
+    apps: RwLock<HashMap<String, String>>,
     voice: Option<voice::Voice>,
 }
 
@@ -120,6 +128,7 @@ async fn main() -> Result<()> {
         link,
         today: env("TRACKSIDE_SIM_TODAY"),
         tools: RwLock::new(None),
+        apps: RwLock::new(HashMap::new()),
         voice: voice::Voice::from_env(&aws, env("TRACKSIDE_SIM_VOICE")),
     }));
 
@@ -145,6 +154,9 @@ fn router(app: Shared) -> Router {
         .route("/sim/api/unlink", post(unlink))
         .route("/sim/api/chat", post(chat))
         .route("/sim/api/speak", post(speak))
+        .route("/sim/api/apps", get(apps))
+        .route("/sim/api/ui", get(app_html))
+        .route("/sim/api/tool", post(app_tool))
         .with_state(app)
 }
 
@@ -246,7 +258,59 @@ struct UserTools<'a> {
     refreshed: Mutex<Option<link::Tokens>>,
 }
 
-impl UserTools<'_> {
+impl<'a> UserTools<'a> {
+    /// The linked user's tokens from the request's cookies, or a 401 asking them to link.
+    #[allow(clippy::result_large_err)]
+    fn for_request(app: &'a App, headers: &HeaderMap) -> Result<Self, Response> {
+        let s = Session::from_headers(headers);
+        if app.link.is_some() && s.access.is_none() && s.refresh.is_none() {
+            return Err(error(
+                StatusCode::UNAUTHORIZED,
+                "link",
+                "Link your Trackside account first.",
+            ));
+        }
+        Ok(Self {
+            app,
+            token: Mutex::new(s.access),
+            refresh: s.refresh,
+            refreshed: Mutex::new(None),
+        })
+    }
+
+    /// The JSON response, carrying a refreshed token as cookies, or the error as the page
+    /// expects it (401 means link again).
+    async fn respond<T: serde::Serialize>(
+        &self,
+        headers: &HeaderMap,
+        what: &str,
+        result: Result<T>,
+    ) -> Response {
+        let secure =
+            self.app.link.as_ref().is_some_and(|l| {
+                link::base_url(headers, l.public_url.as_deref()).starts_with("https")
+            });
+        let cookies = match (&self.app.link, self.refreshed.lock().await.as_ref()) {
+            (Some(link), Some(t)) => link.token_cookies(t, secure),
+            _ => vec![],
+        };
+        match result {
+            Ok(body) => with_cookies(Json(body).into_response(), cookies),
+            Err(e) if e.is::<Unauthorized>() => with_cookies(
+                error(
+                    StatusCode::UNAUTHORIZED,
+                    "link",
+                    "Your Trackside link has expired. Link your account again.",
+                ),
+                Link::clear_cookies(secure),
+            ),
+            Err(e) => {
+                tracing::error!(error = %format!("{e:#}"), "{what} failed");
+                error(StatusCode::BAD_GATEWAY, "failed", format!("{e:#}"))
+            }
+        }
+    }
+
     async fn try_refresh(&self) -> Result<bool> {
         let (Some(link), Some(rt)) = (&self.app.link, &self.refresh) else {
             return Ok(false);
@@ -334,24 +398,10 @@ async fn chat(
     headers: HeaderMap,
     Json(req): Json<ChatRequest>,
 ) -> Response {
-    let s = Session::from_headers(&headers);
-    if app.link.is_some() && s.access.is_none() && s.refresh.is_none() {
-        return error(
-            StatusCode::UNAUTHORIZED,
-            "link",
-            "Link your Trackside account first.",
-        );
-    }
-    let tools = UserTools {
-        app: &app,
-        token: Mutex::new(s.access.clone()),
-        refresh: s.refresh.clone(),
-        refreshed: Mutex::new(None),
+    let tools = match UserTools::for_request(&app, &headers) {
+        Ok(t) => t,
+        Err(resp) => return resp,
     };
-    let secure = app
-        .link
-        .as_ref()
-        .is_some_and(|l| link::base_url(&headers, l.public_url.as_deref()).starts_with("https"));
     let result = async {
         let defs = tools.tool_defs().await?;
         agent::respond(
@@ -364,25 +414,89 @@ async fn chat(
         .await
     }
     .await;
-    let cookies = match (&app.link, tools.refreshed.lock().await.as_ref()) {
-        (Some(link), Some(t)) => link.token_cookies(t, secure),
-        _ => vec![],
+    tools.respond(&headers, "chat turn", result).await
+}
+
+/// Which tools draw their results with an MCP App: tool name to `ui://` URI.
+async fn apps(State(app): State<Shared>, headers: HeaderMap) -> Response {
+    let tools = match UserTools::for_request(&app, &headers) {
+        Ok(t) => t,
+        Err(resp) => return resp,
     };
-    match result {
-        Ok(reply) => with_cookies(Json(reply).into_response(), cookies),
-        Err(e) if e.is::<Unauthorized>() => with_cookies(
-            error(
-                StatusCode::UNAUTHORIZED,
-                "link",
-                "Your Trackside link has expired. Link your account again.",
-            ),
-            Link::clear_cookies(secure),
-        ),
-        Err(e) => {
-            tracing::error!(error = %format!("{e:#}"), "chat turn failed");
-            error(StatusCode::BAD_GATEWAY, "failed", format!("{e:#}"))
-        }
+    let result = tools.tool_defs().await.map(|defs| {
+        defs.iter()
+            .filter_map(|d| Some((d.name.clone(), d.app_uri()?.to_string())))
+            .collect::<HashMap<_, _>>()
+    });
+    tools.respond(&headers, "listing apps", result).await
+}
+
+#[derive(Deserialize)]
+struct UiQuery {
+    uri: String,
+}
+
+/// An MCP App's HTML, read from the MCP server once and kept.
+async fn app_html(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    Query(q): Query<UiQuery>,
+) -> Response {
+    if !q.uri.starts_with("ui://") {
+        return error(StatusCode::BAD_REQUEST, "uri", "not a ui:// resource");
     }
+    let tools = match UserTools::for_request(&app, &headers) {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    if let Some(html) = app.apps.read().await.get(&q.uri).cloned() {
+        return Json(json!({ "uri": q.uri, "html": html })).into_response();
+    }
+    let result = tools
+        .with_token(|t| {
+            let uri = q.uri.clone();
+            let app = app.clone();
+            async move { app.mcp.read_app(t.as_deref(), &uri).await }
+        })
+        .await;
+    if let Ok(html) = &result {
+        app.apps.write().await.insert(q.uri.clone(), html.clone());
+    }
+    let uri = q.uri.clone();
+    tools
+        .respond(
+            &headers,
+            "reading an app",
+            result.map(|html| json!({ "uri": uri, "html": html })),
+        )
+        .await
+}
+
+#[derive(Deserialize)]
+struct AppToolCall {
+    name: String,
+    #[serde(default)]
+    arguments: Value,
+}
+
+/// A tool call an MCP App made through the page, run as the linked user. The App gets the
+/// whole result, as MCP Apps hosts pass it on.
+async fn app_tool(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    Json(req): Json<AppToolCall>,
+) -> Response {
+    let tools = match UserTools::for_request(&app, &headers) {
+        Ok(t) => t,
+        Err(resp) => return resp,
+    };
+    let result = tools
+        .with_token(|t| {
+            let (app, name, args) = (app.clone(), req.name.clone(), req.arguments.clone());
+            async move { app.mcp.call_tool_raw(t.as_deref(), &name, args).await }
+        })
+        .await;
+    tools.respond(&headers, "app tool call", result).await
 }
 
 #[derive(Deserialize)]

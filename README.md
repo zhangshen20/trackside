@@ -66,7 +66,7 @@ To serve it on your own hostname, run the script once with `TRACKSIDE_DOMAIN=mcp
 | Tool | Answers |
 | --- | --- |
 | `list_meetings` | meetings on a date, track condition, first race |
-| `get_race_card` | one race's conditions and full field |
+| `get_race_card` | one race's conditions and full field (with the MCP App on screens) |
 | `horse_form` | career and condition records, recent starts, last-600 m times |
 | `explain_race` | what a race is, why it matters, form contenders |
 | `race_result` | placings, margins, time, fastest last 600 m |
@@ -75,6 +75,16 @@ To serve it on your own hostname, run the script once with `TRACKSIDE_DOMAIN=mcp
 | `set_home_state` | read meetings in your state first and in full |
 | `forget_me` | delete everything Trackside remembers about you |
 | `carnival_guide` | the 2026 Spring Racing Carnival feature races |
+
+## MCP App: the race card on screen
+
+On a device with a screen, Trackside draws its own answers. The server ships an MCP App (the MCP Apps extension, `io.modelcontextprotocol/ui`): `get_race_card`, `race_result`, `horse_form`, `explain_race` and `my_stable` name the resource `ui://trackside/race-card.html` in their `_meta`, and a host that supports MCP Apps shows it in a sandboxed iframe next to the spoken answer.
+
+- **Race card**: the field with saddlecloth numbers, jockeys, trainers, barriers, weights and a colour-coded form strip (gold, silver, bronze for 1st to 3rd, gaps for spells), plus the grade, distance, purse and jump time.
+- **Tap a horse** and the App calls `horse_form` through the host and opens its records and recent starts with last-600 m times; **Follow** calls `follow_horse`. **Explain this race** and **Result** call those tools in place.
+- **Result**: a podium, margins and the fastest last 600 m. **Stable**: what's new since you last checked, and where your horses run next.
+
+The App is one self-contained HTML file (`crates/trackside-mcp/static/race-card.html`): no network access of its own, so it declares no CSP domains, and it only draws what the tools return. The simulator is an MCP Apps host too: it answers `ui/initialize`, passes the tool result in, relays the App's `tools/call` requests to the MCP server as the linked user, and labels each relayed call in its tool-call panel.
 
 ## Memory
 
@@ -89,7 +99,7 @@ The catch-up comes from each followed horse's form between the last check and to
 The Alexa+ MCP toolkit only runs in the United States, so Trackside ships its own simulated Alexa+ experience for demos and for anyone testing from elsewhere. It is labelled as a simulation on the page.
 
 - **Voice in, voice out**: tap the mic and ask (browser speech recognition, `en-AU`), or type. The answer is spoken with the browser's Australian voice.
-- **A screen like an Echo Show**: each answer draws a card from the tool's structured content: the race card, a result with the fastest last 600 m, a horse's form with its records by going, the meetings, your stable.
+- **A screen like an Echo Show**: when a tool has an MCP App, the screen hosts Trackside's own App (see above), and taps in it call the MCP server through the simulator; other answers draw a card from the tool's structured content (the meetings, the carnival guide).
 - **The same path Alexa+ takes**: "Link account" signs in on Cognito's page (authorization code + PKCE, exchanged server-side with the client secret, as Alexa+ account linking does). Each turn, a Claude model on Amazon Bedrock (Converse API, `au.` inference profile) reads the MCP server's own tool list, picks tools, and the simulator calls them on `/mcp` over Streamable HTTP with the user's token. The page lists every MCP call it made.
 
 `crates/trackside-sim/src/main.rs` documents its settings. The deploy script builds it as a second Lambda behind the same API, on `/sim`.

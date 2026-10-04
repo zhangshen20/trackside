@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trackside</title>
+<!--
+  Trackside's MCP App (MCP Apps extension, io.modelcontextprotocol/ui). A host renders this in
+  a sandboxed iframe next to a Trackside tool's answer and passes the tool result in over
+  postMessage (JSON-RPC). The view draws race cards, results, form, a stable and race
+  explanations, and calls Trackside's tools back through the host when a listener taps a horse,
+  asks for the explanation, or follows a horse. No network access of its own, no prices.
+-->
+<style>
+  :root {
+    --bg: #f6f4ee; --panel: #ffffff; --panel-2: #efece3; --line: #ddd7c8; --text: #18211c;
+    --muted: #5f6b63; --turf: #1f6b45; --turf-soft: #dcefe3; --gold: #b8860b; --gold-soft: #f6e7bf;
+    --silver: #8a949c; --bronze: #a0612f; --danger: #9b2c2c; --radius: 14px;
+    color-scheme: light;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1620; --panel: #16202b; --panel-2: #1c2834; --line: #2a3747; --text: #ecf1f5;
+    --muted: #93a2b5; --turf: #43d19e; --turf-soft: rgba(67,209,158,.13); --gold: #f2c14e;
+    --gold-soft: rgba(242,193,78,.14); --silver: #b9c3cc; --bronze: #d68a52; --danger: #ff8080;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  .app { padding: 16px; }
+  .eyebrow { color: var(--muted); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }
+  h1 { margin: 2px 0 8px; font-size: 22px; line-height: 1.2; font-weight: 650; }
+  h2 { margin: 0 0 6px; font-size: 17px; font-weight: 650; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  .chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 999px; background: var(--panel-2); color: var(--muted); font-size: 13px; border: 0; }
+  .chip.grade { background: var(--gold-soft); color: var(--gold); font-weight: 650; }
+  .chip.turf { background: var(--turf-soft); color: var(--turf); }
+  .field { display: grid; gap: 6px; }
+  .runner { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 10px; align-items: center; width: 100%; text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 9px 12px; }
+  .runner:hover, .runner:focus-visible { border-color: var(--turf); outline: none; }
+  .runner.scratched { opacity: .5; }
+  .runner.scratched .name { text-decoration: line-through; }
+  .no { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; font-weight: 700; background: var(--text); color: var(--bg); font-variant-numeric: tabular-nums; }
+  .name { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .who { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .side { display: grid; justify-items: end; gap: 4px; }
+  .meta { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .form { display: flex; gap: 3px; }
+  .form i { width: 14px; height: 14px; border-radius: 4px; display: grid; place-items: center; font: 600 10px/1 system-ui, sans-serif; font-style: normal; background: var(--panel-2); color: var(--muted); }
+  .form i.p1 { background: var(--gold); color: #1a1405; }
+  .form i.p2 { background: var(--silver); color: #10161b; }
+  .form i.p3 { background: var(--bronze); color: #fff; }
+  .form i.spell { background: transparent; width: 6px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .btn { border: 0; border-radius: 999px; padding: 8px 14px; background: var(--turf); color: #fff; font-weight: 600; font-size: 14px; }
+  :root[data-theme="dark"] .btn { color: #07130d; }
+  .btn.quiet, :root[data-theme="dark"] .btn.quiet { background: var(--panel-2); color: var(--text); }
+  .btn:disabled { opacity: .55; cursor: default; }
+  .source { margin-top: 12px; color: var(--muted); font-size: 12px; }
+  .note { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--turf); border-radius: 10px; padding: 10px 12px; margin-top: 12px; }
+  .podium { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }
+  .place { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; text-align: left; }
+  .place .pos { font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+  .place.p1 { border-color: var(--gold); } .place.p1 .pos { color: var(--gold); }
+  .place.p2 .pos { color: var(--silver); } .place.p3 .pos { color: var(--bronze); }
+  .place .name { white-space: normal; }
+  .flash { display: flex; align-items: center; gap: 10px; background: var(--turf-soft); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 10px; }
+  .flash b { font-size: 20px; font-variant-numeric: tabular-nums; }
+  .records { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; margin-bottom: 12px; }
+  .rec { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+  .rec span { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  .rec b { font-size: 18px; font-variant-numeric: tabular-nums; }
+  .starts { display: grid; gap: 6px; }
+  .start { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; gap: 10px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+  .fin { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .fin.win { color: var(--gold); }
+  .drawer { margin-top: 14px; border-top: 2px solid var(--line); padding-top: 14px; }
+  .muted { color: var(--muted); }
+  .skeleton { height: 46px; border-radius: var(--radius); background: linear-gradient(90deg, var(--panel-2), var(--panel), var(--panel-2)); background-size: 200% 100%; animation: shimmer 1.2s linear infinite; margin-bottom: 6px; }
+  @keyframes shimmer { from { background-position: 200% 0; } to { background-position: 0 0; } }
+  @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
+  @media (max-width: 420px) { .podium { grid-template-columns: 1fr; } .runner { grid-template-columns: 30px minmax(0, 1fr); } .side { grid-column: 2; justify-items: start; } }
+</style>
+</head>
+<body>
+<div class="app" id="app"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>
+<script>
+(() => {
+  const app = document.getElementById("app");
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const day = (d) => { const t = new Date(d + "T00:00:00"); return isNaN(t) ? "" : t.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short" }); };
+  const ord = (n) => { const v = n % 100; return n + (v >= 11 && v <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] || "th"); };
+  const money = (prize) => {
+    const m = String(prize || "").replace(/^Of\s*/, "").replace(/^\$/, "").match(/^[\d,]+/);
+    const n = m ? Number(m[0].replace(/,/g, "")) : 0;
+    if (!n) return "";
+    return n >= 1e6 ? "$" + (n / 1e6).toFixed(2).replace(/\.?0+$/, "") + "m" : "$" + n.toLocaleString("en-AU");
+  };
+
+  // ---- MCP Apps bridge: JSON-RPC over postMessage with the host ----
+  const hosted = window.parent !== window;
+  let nextId = 1;
+  const pending = new Map();
+  function post(msg) { window.parent.postMessage(msg, "*"); }
+  function request(method, params) {
+    const id = nextId++;
+    post({ jsonrpc: "2.0", id, method, params });
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      setTimeout(() => { if (pending.delete(id)) reject(new Error(method + " timed out")); }, 25000);
+    });
+  }
+  function notify(method, params) { post({ jsonrpc: "2.0", method, params }); }
+  async function callTool(name, args) {
+    const result = await request("tools/call", { name, arguments: args });
+    if (result.isError) throw new Error((result.content || []).map((c) => c.text).join(" ") || name + " failed");
+    return result;
+  }
+
+  window.addEventListener("message", (e) => {
+    if (e.source !== window.parent) return;
+    const m = e.data;
+    if (!m || m.jsonrpc !== "2.0") return;
+    if (m.id != null && !m.method) {
+      const p = pending.get(m.id); if (!p) return; pending.delete(m.id);
+      m.error ? p.reject(new Error(m.error.message || "error")) : p.resolve(m.result);
+      return;
+    }
+    switch (m.method) {
+      case "ui/notifications/tool-input": loading(); break;
+      case "ui/notifications/tool-result": render(m.params || {}); break;
+      case "ui/notifications/host-context-changed": applyContext(m.params || {}); break;
+      case "ui/resource-teardown": post({ jsonrpc: "2.0", id: m.id, result: {} }); break;
+      case "ping": post({ jsonrpc: "2.0", id: m.id, result: {} }); break;
+      default: if (m.id != null) post({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: "unknown method" } });
+    }
+  });
+
+  function applyContext(ctx) {
+    if (ctx.theme) document.documentElement.dataset.theme = ctx.theme;
+  }
+  new ResizeObserver(() => {
+    if (hosted) notify("ui/notifications/size-changed", { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight });
+  }).observe(document.body);
+
+  // ---- Views, chosen by the shape of the tool's structured content ----
+  let current = null;
+
+  function loading() { app.innerHTML = '<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>'; }
+
+  function render(result) {
+    const s = result.structuredContent;
+    if (!s) { app.innerHTML = `<p>${esc((result.content || []).map((c) => c.text).join(" "))}</p>`; return; }
+    current = s;
+    if (s.card) return raceCard(s);
+    if (s.result) return raceResult(s);
+    if (s.form) return horseForm(s, app);
+    if (s.explanation) return explain(s);
+    if (s.stable) return stable(s);
+    app.innerHTML = `<p>${esc((result.content || []).map((c) => c.text).join(" "))}</p>`;
+  }
+
+  function formStrip(last10) {
+    return `<span class="form" aria-label="Last starts ${esc(last10)}, most recent last">${[...String(last10 || "")].map((c) => {
+      if (c.toLowerCase() === "x") return '<i class="spell" title="spell"></i>';
+      const cls = c === "1" ? "p1" : c === "2" ? "p2" : c === "3" ? "p3" : "";
+      return `<i class="${cls}">${c === "0" ? "–" : esc(c)}</i>`;
+    }).join("")}</span>`;
+  }
+
+  function raceCard(s) {
+    const c = s.card;
+    const chips = [
+      c.grade && `<span class="chip grade">${esc(c.grade)}</span>`,
+      c.distance_m && `<span class="chip">${esc(c.distance_m)} m</span>`,
+      money(c.prize) && `<span class="chip">${esc(money(c.prize))}</span>`,
+      c.start_local && `<span class="chip turf">Jumps ${esc(c.start_local)}</span>`,
+      !c.grade && c.class && c.class.length <= 40 && `<span class="chip">${esc(c.class)}</span>`,
+    ].filter(Boolean).join("");
+    app.innerHTML = `
+      <div class="eyebrow">Race ${esc(c.race_number)} · ${esc(s.venue)} · ${esc(day(s.date))}</div>
+      <h1>${esc(c.name)}</h1>
+      <div class="chips">${chips}</div>
+      <div class="field">${(c.runners || []).map((r) => `
+        <button class="runner${r.scratched ? " scratched" : ""}" data-horse="${esc(r.horse)}" ${r.scratched ? "disabled" : ""}>
+          <span class="no">${esc(r.number)}</span>
+          <span style="min-width:0"><div class="name">${esc(r.horse)}</div><div class="who">${esc(r.jockey)} · ${esc(r.trainer)}</div></span>
+          <span class="side">${formStrip(r.last10)}<span class="meta">${r.barrier ? "Bar " + esc(r.barrier) : ""}${r.weight_kg ? " · " + esc(r.weight_kg) + " kg" : ""}</span></span>
+        </button>`).join("")}</div>
+      <div class="actions"><button class="btn" id="explain">Explain this race</button><button class="btn quiet" id="result">Result</button></div>
+      <div id="extra"></div>
+      <div class="drawer" id="drawer" hidden></div>
+      <div class="source">Source: ${esc(s.source || "Racing Australia")} · Tap a horse for its form</div>`;
+    wireHorses();
+    const args = { venue: s.venue, race_number: c.race_number, date: s.date };
+    document.getElementById("explain").onclick = (e) => inline(e.target, "explain_race", args, (r) => `<div class="note">${esc(r.structuredContent.explanation)}</div>`);
+    document.getElementById("result").onclick = (e) => inline(e.target, "race_result", args, (r) =>
+      r.structuredContent.result ? resultBody(r.structuredContent.result) : `<div class="note">${esc(r.content.map((x) => x.text).join(" "))}</div>`);
+  }
+
+  async function inline(button, tool, args, draw) {
+    const extra = document.getElementById("extra");
+    button.disabled = true;
+    extra.innerHTML = '<div class="skeleton" style="margin-top:12px"></div>';
+    try { const r = await callTool(tool, args); extra.innerHTML = `<div style="margin-top:12px">${draw(r)}</div>`; wireHorses(); }
+    catch (err) { extra.innerHTML = `<div class="note">${esc(err.message)}</div>`; }
+    finally { button.disabled = false; }
+  }
+
+  function resultBody(r) {
+    const placings = r.placings || [];
+    const top = placings.filter((p) => p.position >= 1 && p.position <= 3);
+    const rest = placings.filter((p) => p.position > 3);
+    const f = r.fastest_last_600;
+    return `
+      <div class="podium">${top.map((p) => `<button class="place p${p.position}" data-horse="${esc(p.horse)}">
+        <div class="pos">${ord(p.position)}</div><div class="name">${esc(p.horse)}</div>
+        <div class="who">${esc(p.jockey)}${p.position > 1 && p.margin_lengths != null ? " · " + esc(p.margin_lengths) + " L" : ""}</div></button>`).join("")}</div>
+      ${f ? `<div class="flash"><span class="chip turf">Fastest last 600 m</span><span><b>${esc(f.last_600_s)}s</b> ${esc(f.horse)}</span></div>` : ""}
+      <div class="field">${rest.map((p) => `<button class="runner" data-horse="${esc(p.horse)}"><span class="no">${esc(p.position)}</span>
+        <span style="min-width:0"><div class="name">${esc(p.horse)}</div><div class="who">${esc(p.jockey)}</div></span>
+        <span class="meta">${p.margin_lengths != null ? esc(p.margin_lengths) + " L" : ""}</span></button>`).join("")}</div>
+      <div class="meta" style="margin-top:8px">${[r.track_condition, r.winning_time && "Time " + r.winning_time].filter(Boolean).map(esc).join(" · ")}</div>`;
+  }
+
+  function raceResult(s) {
+    const r = s.result;
+    app.innerHTML = `<div class="eyebrow">Result · ${esc(day(r.date))}</div><h1>${esc(r.venue)} race ${esc(r.race_number)}</h1>
+      ${resultBody(r)}<div class="drawer" id="drawer" hidden></div>
+      <div class="source">Source: ${esc([].concat(s.source || "Racing Australia").join(", "))} · Tap a horse for its form</div>`;
+    wireHorses();
+  }
+
+  function wireHorses() {
+    app.querySelectorAll("[data-horse]").forEach((b) => { b.onclick = () => openForm(b.dataset.horse); });
+  }
+
+  async function openForm(horse) {
+    let drawer = document.getElementById("drawer");
+    if (!drawer) { drawer = document.createElement("div"); drawer.id = "drawer"; drawer.className = "drawer"; app.appendChild(drawer); }
+    drawer.hidden = false;
+    drawer.innerHTML = `<h2>${esc(horse)}</h2><div class="skeleton"></div><div class="skeleton"></div>`;
+    drawer.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    try {
+      const r = await callTool("horse_form", { horse });
+      if (!r.structuredContent || !r.structuredContent.form) { drawer.innerHTML = `<div class="note">${esc(r.content.map((x) => x.text).join(" "))}</div>`; return; }
+      horseForm(r.structuredContent, drawer);
+    } catch (err) { drawer.innerHTML = `<div class="note">${esc(err.message)}</div>`; }
+  }
+
+  function horseForm(s, into) {
+    const f = s.form;
+    const recs = [["Career", f.career], ["First up", f.first_up], ["Second up", f.second_up], ["Good", f.good], ["Soft", f.soft], ["Heavy", f.heavy]]
+      .filter(([, r]) => r && r.starts > 0)
+      .map(([n, r]) => `<div class="rec"><span>${n}</span><b>${r.wins}/${r.starts}</b> <span style="display:inline">${r.seconds}-${r.thirds}</span></div>`).join("");
+    const starts = (f.starts || []).slice(0, 6).map((x) => `<div class="start">
+        <span class="fin${x.finish === 1 ? " win" : ""}">${x.finish ? ord(x.finish) : "–"}${x.starters ? `<span class="meta">/${esc(x.starters)}</span>` : ""}</span>
+        <span style="min-width:0"><div class="name" style="font-weight:600">${esc(x.venue)} · ${esc(x.distance_m ? x.distance_m + " m" : "")}</div>
+          <div class="who">${[day(x.date), x.condition, x.class && x.class.length <= 30 && x.class].filter(Boolean).map(esc).join(" · ")}</div></span>
+        <span class="meta">${x.margin_lengths != null && x.finish !== 1 ? esc(x.margin_lengths) + " L" : ""}${x.last_600_s ? `<br>L600 ${esc(x.last_600_s)}s` : ""}</span></div>`).join("");
+    into.innerHTML = `${into === app ? `<div class="eyebrow">Form</div><h1>${esc(f.horse)}</h1>` : `<h2>${esc(f.horse)}</h2>`}
+      <div class="muted" style="margin-bottom:10px">Trained by ${esc(f.trainer)}</div>
+      <div class="records">${recs}</div>
+      <div class="starts">${starts || '<div class="muted">No recent starts on file.</div>'}</div>
+      <div class="actions"><button class="btn" data-follow="${esc(f.horse)}">Follow ${esc(f.horse)}</button></div>
+      ${into === app ? `<div class="source">Source: ${esc(s.source || "Racing Australia")}</div>` : ""}`;
+    into.querySelector("[data-follow]").onclick = async (e) => {
+      const b = e.target; b.disabled = true;
+      try { const r = await callTool("follow_horse", { horse: f.horse }); b.textContent = r.structuredContent && r.structuredContent.found ? "Following" : "Couldn't follow"; }
+      catch (err) { b.textContent = "Couldn't follow"; b.disabled = false; }
+    };
+  }
+
+  function explain(s) {
+    app.innerHTML = `<div class="eyebrow">Race explained</div><h1>${esc(s.race)}</h1>
+      <div class="note" style="margin-top:0">${esc(s.explanation)}</div>
+      ${s.contenders && s.contenders.length ? `<h2 style="margin-top:14px">Strongest recent form</h2><div class="field">${s.contenders.map((h) => `<button class="runner" data-horse="${esc(h)}"><span class="no">·</span><span class="name">${esc(h)}</span><span class="meta">Form ›</span></button>`).join("")}</div>` : ""}
+      <div class="drawer" id="drawer" hidden></div>
+      <div class="source">Source: ${esc(s.source || "Racing Australia")}${s.written_by && s.written_by.startsWith("bedrock") ? " · worded by Amazon Bedrock from these facts" : ""}</div>`;
+    wireHorses();
+  }
+
+  function stable(s) {
+    const eng = s.engagements || [];
+    const caught = s.catch_up || [];
+    app.innerHTML = `<div class="eyebrow">My stable${s.remembered ? " · remembered across sessions" : ""}</div><h1>${s.stable.length} horse${s.stable.length === 1 ? "" : "s"} followed</h1>
+      ${s.since ? `<h2>Since you last checked, ${esc(day(s.since))}</h2><div class="starts" style="margin-bottom:12px">${caught.map((c) => `<div class="start">
+        <span class="fin${c.finish === 1 ? " win" : ""}">${c.finish ? ord(c.finish) : "–"}</span>
+        <span style="min-width:0"><div class="name" style="font-weight:600">${esc(c.horse)}</div><div class="who">${[day(c.date), c.venue, c.distance_m && c.distance_m + " m", c.condition].filter(Boolean).map(esc).join(" · ")}</div></span><span></span></div>`).join("") || '<div class="muted">None of your horses have raced since.</div>'}</div>` : ""}
+      <div class="field">${s.stable.map((h) => { const e = eng.filter((x) => x.horse === h);
+        return `<button class="runner" data-horse="${esc(h)}"><span class="no">${esc(h[0] || "?")}</span><span style="min-width:0"><div class="name">${esc(h)}</div>
+          <div class="who">${e.length ? e.map((x) => `${esc(x.venue)} R${esc(x.race_number)}${x.start_local ? " at " + esc(x.start_local) : ""}${x.finished ? " · " + ord(x.finished) : ""}`).join("; ") : "Not engaged" + (s.date ? " " + esc(day(s.date)) : "")}</div></span><span class="meta">Form ›</span></button>`; }).join("")}</div>
+      <div class="drawer" id="drawer" hidden></div>`;
+    wireHorses();
+  }
+
+  if (!hosted) {
+    app.innerHTML = '<h1>Trackside</h1><p class="muted">This is Trackside\'s MCP App. An MCP Apps host shows it next to a Trackside tool\'s answer.</p>';
+    return;
+  }
+  request("ui/initialize", {
+    protocolVersion: "2026-01-26",
+    appInfo: { name: "Trackside race card", version: "1.0.0" },
+    appCapabilities: { availableDisplayModes: ["inline"] },
+  }).then((r) => { applyContext((r && r.hostContext) || {}); notify("ui/notifications/initialized", {}); })
+    .catch(() => { app.innerHTML = '<p class="muted">The host did not answer.</p>'; });
+})();
+</script>
+</body>
+</html>
