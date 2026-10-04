@@ -72,6 +72,27 @@ pub const WAGERING_PHRASES: &[&str] = &[
     "tote",
 ];
 
+/// A venue's name without its wagering sponsor. Sponsored grounds are named "<brand> Park
+/// <town>" ("Picklebet Park Warwick", "bet365 Park Kilmore"), so once the brand is gone the
+/// sponsor's "Park" goes with it and the venue is the town. A ground whose own name has a Park
+/// in it ("Aquis Park Gold Coast", "Pioneer Park") keeps it.
+pub fn venue_name(raw: &str) -> String {
+    let cleaned = without_bookmakers(raw);
+    let lost_words = raw.split_whitespace().count() > cleaned.split_whitespace().count();
+    let mut words = cleaned.split_whitespace();
+    match (words.next(), lost_words) {
+        (Some(first), true) if first.eq_ignore_ascii_case("park") => {
+            let rest: Vec<&str> = words.collect();
+            if rest.is_empty() {
+                cleaned
+            } else {
+                rest.join(" ")
+            }
+        }
+        _ => cleaned,
+    }
+}
+
 /// Remove wagering brands and products from a race, venue or class name, keeping the rest
 /// as written. Horse and people's names are never passed through this. A name that was
 /// nothing but wagering words comes back empty, and the tools then say "race 2" instead.
@@ -522,6 +543,16 @@ mod tests {
             "Bonus on prizemoney pools for races."
         );
         assert_eq!(without_bookmakers("Tableland Cup"), "Tableland Cup");
+    }
+
+    #[test]
+    fn a_sponsors_park_goes_with_the_sponsor() {
+        assert_eq!(venue_name("Picklebet Park Warwick"), "Warwick");
+        assert_eq!(venue_name("bet365 Park Kilmore"), "Kilmore");
+        assert_eq!(venue_name("SPORTSBET-BALLARAT"), "BALLARAT");
+        assert_eq!(venue_name("Aquis Park Gold Coast"), "Aquis Park Gold Coast");
+        assert_eq!(venue_name("Pioneer Park"), "Pioneer Park");
+        assert_eq!(venue_name("Warwick Farm"), "Warwick Farm");
     }
 
     #[test]
