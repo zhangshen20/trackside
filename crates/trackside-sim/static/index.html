@@ -231,15 +231,18 @@
       if (!s.stable) return null;
       const eng = s.engagements || [];
       const caught = s.catch_up || [];
+      const up = s.upcoming || [];
+      const next = (h) => { const u = up.find((x) => x.horse === h); if (!u) return s.date ? "Not engaged " + esc(fmtDate(s.date)) : "Following";
+        return `${u.scratched ? "Scratched from" : "Next run:"} ${esc(u.venue)} race ${esc(u.race_number)}, ${esc(fmtDate(u.date))}${u.start_local && !u.scratched ? " at " + esc(u.start_local) : ""}${u.race_name ? " · " + esc(u.race_name) : ""}`; };
       const since = s.since ? `<div class="sub">Since you last checked, ${esc(fmtDate(s.since))}</div><div class="list">
         ${caught.map((c) => `<div class="item"><div class="t">${esc(c.horse)} ${c.finish === 1 ? '<span class="badge win">Won</span>' : c.finish ? `<span class="pill">${esc(c.finish)}${c.starters ? " of " + esc(c.starters) : ""}</span>` : ""}</div><div class="m">${[fmtDate(c.date), c.venue, c.distance_m && c.distance_m + " m", c.condition].filter(Boolean).map(esc).join(" · ")}</div></div>`).join("") || '<div class="muted">None of your horses have raced since.</div>'}
       </div>` : "";
       return `<h2>My stable</h2><div class="sub">${esc(s.stable.length)} horse${s.stable.length === 1 ? "" : "s"} followed${s.remembered ? " · remembered across sessions" : ""}</div>${since}<div class="list">
         ${s.stable.map((h) => { const e = eng.filter((x) => x.horse === h);
-          return `<div class="item"><div class="t">${esc(h)}</div><div class="m">${e.length ? e.map((x) => `${esc(x.venue)} race ${esc(x.race_number)}${x.start_local ? " at " + esc(x.start_local) : ""}${x.finished ? ` · finished ${x.finished === 1 ? '<span class="badge win">1st</span>' : esc(x.finished)}` : ""}`).join("; ") : s.date ? "Not engaged " + esc(fmtDate(s.date)) : "Following"}</div></div>`; }).join("") || '<div class="muted">No horses yet. Say "follow" and a horse\'s name.</div>'}
+          return `<div class="item"><div class="t">${esc(h)}</div><div class="m">${e.length ? e.map((x) => `${esc(x.venue)} race ${esc(x.race_number)}${x.start_local ? " at " + esc(x.start_local) : ""}${x.scratched ? " · scratched" : ""}${x.finished ? ` · finished ${x.finished === 1 ? '<span class="badge win">1st</span>' : esc(x.finished)}` : ""}`).join("; ") : next(h)}</div></div>`; }).join("") || '<div class="muted">No horses yet. Say "follow" and a horse\'s name.</div>'}
       </div>`;
     },
-    follow_horse(s) { return s.stable ? cards.my_stable({ stable: s.stable, date: "", remembered: s.remembered }) : null; },
+    follow_horse(s) { return s.stable ? cards.my_stable({ stable: s.stable, date: "", remembered: s.remembered, upcoming: s.next ? [s.next] : [] }) : null; },
     unfollow_horse(s) { return s.stable ? cards.my_stable({ stable: s.stable, date: "" }) : null; },
     carnival_guide(s) {
       if (!s.races) return null;

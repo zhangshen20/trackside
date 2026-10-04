@@ -158,6 +158,54 @@ pub struct Runner {
     pub scratched: bool,
 }
 
+/// One horse's place in a published field: where and when it runs next (or ran), as a
+/// stable report says it. Built from the meetings, see `Store::engagements`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Engagement {
+    pub horse: String,
+    pub date: NaiveDate,
+    pub state: String,
+    pub venue: String,
+    pub race_number: u32,
+    pub race_name: String,
+    pub start_local: String,
+    pub number: u32,
+    pub barrier: Option<u32>,
+    pub jockey: String,
+    pub scratched: bool,
+}
+
+/// Every field in `meetings` that names `horse`, in meeting order.
+pub fn engagements_in(meetings: &[Meeting], horse: &str) -> Vec<Engagement> {
+    let key = crate::store::horse_key(horse);
+    let mut out = Vec::new();
+    for m in meetings {
+        for r in &m.races {
+            if let Some(x) = r
+                .runners
+                .iter()
+                .find(|x| crate::store::horse_key(&x.horse) == key)
+            {
+                out.push(Engagement {
+                    horse: x.horse.clone(),
+                    date: m.date,
+                    state: m.state.clone(),
+                    venue: m.venue.clone(),
+                    race_number: r.race_number,
+                    race_name: r.name.clone(),
+                    start_local: r.start_local.clone(),
+                    number: x.number,
+                    barrier: x.barrier,
+                    jockey: x.jockey.clone(),
+                    scratched: x.scratched,
+                });
+            }
+        }
+    }
+    out
+}
+
 /// Starts-wins-seconds-thirds, as in "10: 2-2-0".
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]

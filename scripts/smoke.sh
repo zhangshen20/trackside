@@ -4,8 +4,9 @@
 #   scripts/smoke.sh                                   # the live AWS endpoint, 27 Sep data
 #   MCP_URL=http://127.0.0.1:8000/mcp scripts/smoke.sh --fixture   # local server on fixtures/demo.json
 #
-# The script sends no session id, so a local server must run stateless, the way Lambda does:
-#   TRACKSIDE_STATELESS=1 cargo run -p trackside-mcp
+# The script sends no session id, so a local server must run stateless, the way Lambda does, and
+# the fixture checks expect its clock fixed before the fixture's Caulfield Cup card:
+#   TRACKSIDE_STATELESS=1 TRACKSIDE_TODAY=2026-10-14 cargo run -p trackside-mcp
 #
 # Checks initialize, tools/list (nine tools), a call to every tool, the error paths, and that no
 # answer mentions betting, odds or a bookmaker. Needs bash, curl and python3. Exits non-zero on
@@ -88,6 +89,12 @@ check "jockey_or_trainer_stats" "$(call jockey_or_trainer_stats "{\"name\":\"$PE
 check "carnival_guide"  "$(call carnival_guide '{}')" "$answered and len(r['result']['structuredContent']['races']) >= 5"
 check "follow_horse"    "$(call follow_horse "{\"horse\":\"$HORSE\"}")" "$answered"
 check "my_stable"       "$(call my_stable "{\"date\":\"$DATE\"}")" "$answered"
+# The stable looks ahead (fixture only; the server must run with TRACKSIDE_TODAY=2026-10-14, the
+# Wednesday before the fixture's Caulfield Cup, or any real day before it).
+if [[ "${1:-}" == "--fixture" ]]; then
+  check "my_stable names the next run" "$(call my_stable '{"date":"2026-10-14"}')" \
+    "$answered and 'runs on Saturday in the Caulfield Cup' in text and r['result']['structuredContent']['upcoming'][0]['race_number'] == 8"
+fi
 # Listener memory (servers since the memory change): unfollowing what was just followed.
 if grep -q '"unfollow_horse"' <<<"$TOOLS"; then
   check "unfollow_horse" "$(call unfollow_horse "{\"horse\":\"$HORSE\"}")" \

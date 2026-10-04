@@ -21,6 +21,7 @@
 //! facts for the ear, falling back to its template sentence (see `summary.rs`).
 
 mod auth;
+mod clock;
 mod memory;
 mod summary;
 #[cfg(test)]
@@ -115,6 +116,7 @@ async fn main() -> Result<()> {
         store,
         memory,
         summariser,
+        clock::from_env(),
         auth,
         stateless,
         on_lambda,
@@ -139,10 +141,12 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_app(
     store: Arc<dyn Store>,
     memory: Arc<dyn Memory>,
     summariser: Option<Arc<Summariser>>,
+    clock: Arc<dyn clock::Clock>,
     auth: Option<Arc<Auth>>,
     stateless: bool,
     on_lambda: bool,
@@ -169,6 +173,7 @@ fn build_app(
                 store.clone(),
                 memory.clone(),
                 summariser.clone(),
+                clock.clone(),
             ))
         },
         LocalSessionManager::default().into(),
