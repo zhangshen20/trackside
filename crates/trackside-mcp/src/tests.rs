@@ -560,6 +560,33 @@ async fn screen_tools_point_at_the_mcp_app() {
     ] {
         assert!(with_app.contains(&name), "{name} has no app: {with_app:?}");
     }
+    // Every tool carries a title and behaviour hints, and its input schema uses only what
+    // every host's model reads: no type arrays, formats, bounds or `$schema`.
+    for t in tools {
+        let name = t["name"].as_str().unwrap();
+        assert!(t["title"].is_string(), "{name} has no title");
+        assert!(
+            t["annotations"]["readOnlyHint"].is_boolean(),
+            "{name} has no annotations"
+        );
+        let schema = &t["inputSchema"];
+        assert!(schema.get("$schema").is_none(), "{name}: {schema}");
+        for (field, def) in schema["properties"].as_object().unwrap() {
+            assert!(def["type"].is_string(), "{name}.{field}: {def}");
+            assert!(
+                def.get("format").is_none() && def.get("minimum").is_none(),
+                "{name}.{field}: {def}"
+            );
+        }
+    }
+    assert_eq!(
+        tools
+            .iter()
+            .filter(|t| t["annotations"]["readOnlyHint"] == true)
+            .count(),
+        7,
+        "read-only tools"
+    );
 
     let (_, _, res) = send(
         &app,
