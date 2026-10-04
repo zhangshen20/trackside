@@ -264,7 +264,7 @@ async fn service_token_discovers_but_cannot_call_tools() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 12);
+    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 13);
     let (status, headers, _) = send(
         &app,
         "POST",
@@ -364,7 +364,7 @@ async fn open_server_answers_without_tokens() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 12);
+    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 13);
     let (status, _, _) = send(
         &app,
         "GET",
@@ -1055,7 +1055,7 @@ async fn screen_tools_point_at_the_mcp_app() {
             .iter()
             .filter(|t| t["annotations"]["readOnlyHint"] == true)
             .count(),
-        7,
+        8,
         "read-only tools"
     );
 
@@ -1651,4 +1651,211 @@ async fn a_failing_store_is_heard_as_one_plain_sentence() {
     let lines = emf_lines(&sink);
     assert_eq!(lines.len(), calls.len());
     assert!(lines.iter().all(|l| l["Outcome"] == "error"), "{lines:?}");
+}
+
+// ---- next_race ----
+
+async fn next_race_at(router: &axum::Router, args: Value) -> (String, Value) {
+    let (_, _, v) = send(router, "POST", "/mcp", None, Some(call("next_race", args))).await;
+    (spoken(&v), v["result"]["structuredContent"].clone())
+}
+
+fn words(text: &str) -> usize {
+    text.split_whitespace().count()
+}
+
+/// 4:35 pm in Melbourne on Cup day: the Eagle Farm race jumped at 12:10 pm Queensland time,
+/// so the next race is the Caulfield Cup, 25 minutes away.
+#[tokio::test]
+async fn next_race_is_the_next_to_jump() {
+    let router = app_at(false, Arc::new(InMemory::default()), "2026-10-17T05:35:00Z").await;
+    let (text, s) = next_race_at(&router, json!({})).await;
+    assert!(
+        text.starts_with("The next race is race 8 at Caulfield, the Caulfield Cup over 2400 metres, due to jump in about 25 minutes, at 5 pm Melbourne time."),
+        "{text}"
+    );
+    assert!(
+        !text.contains("Eagle Farm") && !text.contains("After that"),
+        "{text}"
+    );
+    assert!(words(&text) < 60, "{text}");
+    assert_eq!(s["found"], true);
+    assert_eq!(s["when"], "today");
+    assert_eq!(s["next"]["venue"], "Caulfield");
+    assert_eq!(s["next"]["race_number"], 8);
+    assert_eq!(s["next"]["minutes_until"], 25);
+    assert_eq!(s["next"]["start_utc"], "2026-10-17T06:00:00+00:00");
+    assert!(s["next"]["home_time"].is_null());
+    assert_eq!(s["then"], json!([]));
+
+    // A Queensland listener hears their own clock first.
+    send(
+        &router,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("set_home_state", json!({"state": "QLD"}))),
+    )
+    .await;
+    let (text, s) = next_race_at(&router, json!({})).await;
+    assert!(
+        text.contains(
+            "due to jump in about 25 minutes, at 4 pm Queensland time, 5 pm at the track."
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("near you"), "{text}");
+    assert_eq!(s["next"]["home_time"], "16:00");
+    assert_eq!(s["home_state"], "QLD");
+    let lower = text.to_lowercase();
+    for word in [
+        "odds",
+        "bet",
+        "tip",
+        "tips",
+        "chance",
+        "likely",
+        "contender",
+    ] {
+        assert!(!has_word(&lower, word), "{word}: {text}");
+    }
+    assert!(!text.contains('\u{2014}'), "{text}");
+}
+
+#[tokio::test]
+async fn next_race_after_the_last_says_racing_is_done() {
+    // 7 pm in Melbourne on Cup day; the fixture has nothing on Sunday or after.
+    let router = app_at(false, Arc::new(InMemory::default()), "2026-10-17T08:00:00Z").await;
+    let (text, s) = next_race_at(&router, json!({})).await;
+    assert!(
+        text.starts_with(
+            "Racing is done for today, and I don't have any racing on file for tomorrow."
+        ),
+        "{text}"
+    );
+    assert_eq!(s["found"], false);
+    assert!(s["next"].is_null());
+
+    // Friday night: nothing today, the Saturday card tomorrow, first race at Eagle Farm.
+    let router = app_at(false, Arc::new(InMemory::default()), "2026-10-16T10:00:00Z").await;
+    let (text, s) = next_race_at(&router, json!({})).await;
+    assert!(
+        text.starts_with("There's no racing on file for today; tomorrow's first race is race 1 at Eagle Farm at 12:10 pm Queensland time."),
+        "{text}"
+    );
+    assert_eq!(s["when"], "tomorrow");
+    assert_eq!(s["then"][0]["venue"], "Caulfield");
+    // A venue heard a little wrong is still found on tomorrow's card.
+    let (text, _) = next_race_at(&router, json!({"venue": "Cofield"})).await;
+    assert!(
+        text.starts_with("There's no racing at Caulfield on file for today; tomorrow's first race is race 8 at Caulfield at 5 pm Melbourne time."),
+        "{text}"
+    );
+}
+
+#[tokio::test]
+async fn next_race_midweek_names_the_next_day_with_racing() {
+    let router = app(false).await;
+    let (text, s) = next_race_at(&router, json!({})).await;
+    assert!(
+        text.starts_with("I don't have any racing on file for today or tomorrow. The next racing I have is on Saturday 17 October, starting with race 1 at Eagle Farm at 12:10 pm Queensland time."),
+        "{text}"
+    );
+    assert_eq!(s["when"], "later");
+    assert_eq!(s["next"]["date"], "2026-10-17");
+    assert!(s["next"]["minutes_until"].as_i64().unwrap() > 0);
+    let (text, _) = next_race_at(&router, json!({"state": "vic"})).await;
+    assert!(
+        text.contains(
+            "on Saturday 17 October, starting with race 8 at Caulfield at 5 pm Melbourne time."
+        ),
+        "{text}"
+    );
+    let (_, _, v) = send(
+        &router,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("next_race", json!({"state": "Narnia"}))),
+    )
+    .await;
+    assert!(
+        v.get("error").is_some() || v["result"]["isError"] == true,
+        "{v}"
+    );
+}
+
+/// A Saturday afternoon with Caulfield running ahead of Doomben, and a race with no time yet.
+fn a_busy_afternoon() -> FixtureStore {
+    let fixture: Fixture = serde_json::from_value(json!({
+        "meetings": [
+            { "date": "2026-10-17", "state": "VIC", "venue": "Caulfield", "races": [
+                { "race_number": 5, "name": "Example Handicap", "start_local": "15:40", "distance_m": 1400, "runners": [] },
+                { "race_number": 6, "name": "", "start_local": "TBA", "distance_m": 1600, "runners": [] }
+            ] },
+            { "date": "2026-10-17", "state": "QLD", "venue": "Doomben", "races": [
+                { "race_number": 2, "name": "", "start_local": "15:05", "distance_m": 1200, "runners": [] }
+            ] },
+            { "date": "2026-10-17", "state": "NSW", "venue": "Randwick", "races": [
+                { "race_number": 3, "name": "", "start_local": "15:50", "distance_m": 1100, "runners": [] }
+            ] }
+        ]
+    }))
+    .unwrap();
+    FixtureStore::from_fixture(fixture)
+}
+
+#[tokio::test]
+async fn next_race_near_you_comes_first() {
+    // 3:15 pm in Melbourne, 2:15 pm in Brisbane.
+    let router = app_with(
+        false,
+        Arc::new(a_busy_afternoon()),
+        Arc::new(InMemory::default()),
+        "2026-10-17T04:15:00Z",
+    )
+    .await;
+    let (text, s) = next_race_at(&router, json!({})).await;
+    assert!(
+        text.starts_with("The next race is race 5 at Caulfield, the Example Handicap over 1400 metres, due to jump in about 25 minutes, at 3:40 pm Melbourne time. After that, race 3 at Randwick at 3:50 pm Sydney time."),
+        "{text}"
+    );
+    assert!(words(&text) < 60, "{text}");
+    // The TBA race can't be placed on the clock, so it isn't in the list.
+    let then: Vec<_> = s["then"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["venue"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(then, ["Randwick", "Doomben"]);
+
+    send(
+        &router,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("set_home_state", json!({"state": "QLD"}))),
+    )
+    .await;
+    let (text, s) = next_race_at(&router, json!({})).await;
+    assert!(
+        text.starts_with("The next race near you is race 2 at Doomben, due to jump in about 50 minutes, at 3:05 pm Queensland time; the next anywhere is race 5 at Caulfield at 2:40 pm Queensland time."),
+        "{text}"
+    );
+    assert!(words(&text) < 60, "{text}");
+    assert_eq!(s["next"]["venue"], "Doomben");
+    assert_eq!(s["next_anywhere"]["venue"], "Caulfield");
+    assert_eq!(s["next_anywhere"]["home_time"], "14:40");
+    assert_eq!(s["then"][0]["venue"], "Caulfield");
+
+    // Asking about one state or venue answers just that.
+    let (text, s) = next_race_at(&router, json!({"venue": "Randwick"})).await;
+    assert!(
+        text.starts_with("The next race at Randwick is race 3 at Randwick, a race over 1100 metres, due to jump in about 35 minutes, at 2:50 pm Queensland time, 3:50 pm at the track."),
+        "{text}"
+    );
+    assert_eq!(s["then"], json!([]));
+    let (_, s) = next_race_at(&router, json!({"state": "VIC"})).await;
+    assert_eq!(s["next"]["venue"], "Caulfield");
 }

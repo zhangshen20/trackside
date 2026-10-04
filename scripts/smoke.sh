@@ -10,8 +10,8 @@
 # the fixture checks expect its clock fixed before the fixture's Caulfield Cup card:
 #   TRACKSIDE_STATELESS=1 TRACKSIDE_TODAY=2026-10-14 cargo run -p trackside-mcp
 #
-# Checks initialize, tools/list (the core tools; the server has twelve), a call to ten of the
-# twelve tools (set_home_state and forget_me are left alone), the error paths, and that no
+# Checks initialize, tools/list (the core tools; the server has thirteen), a call to eleven of the
+# thirteen tools (set_home_state and forget_me are left alone), the error paths, and that no
 # answer mentions betting, odds or a bookmaker. Needs bash, curl and python3. Exits non-zero on
 # any failure. With --wait-for N it first polls /healthz next to MCP_URL for up to N seconds, so
 # it can be started in the same breath as the server; CI runs it that way.
@@ -96,7 +96,7 @@ check "initialize speaks 2025-11-25 with tools" "$res" \
 
 res=$(rpc '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')
 check "tools/list has the core tools" "$res" \
-  'set(["list_meetings","get_race_card","horse_form","explain_race","race_result","jockey_or_trainer_stats","follow_horse","my_stable","carnival_guide"]) <= set(t["name"] for t in r["result"]["tools"])'
+  'set(["list_meetings","get_race_card","horse_form","explain_race","race_result","jockey_or_trainer_stats","follow_horse","my_stable","next_race","carnival_guide"]) <= set(t["name"] for t in r["result"]["tools"])'
 TOOLS="$res"
 check "every tool has a description" "$res" 'all(len(t.get("description","")) > 40 for t in r["result"]["tools"])'
 # The MCP App (servers since the app change): tools point at it and it reads as HTML.
@@ -144,6 +144,13 @@ check "horse_form reads cleanly" "$(call horse_form "{\"horse\":\"$HORSE\"}")" \
   '"  " not in text and "0 from 0" not in text and "Jump track" not in text and not re.search(r"\bat [A-Z]{4}\b", text)'
 check "follow_horse refuses an unknown horse" "$(call follow_horse '{"horse":"Not A Real Horse Zzq"}')" \
   'r["result"]["structuredContent"]["found"] is False'
+# next_race: the next race to jump anywhere. On the fixture's Wednesday there is no racing until
+# Saturday's Caulfield Cup card.
+check "next_race" "$(call next_race '{}')" "$answered and 'found' in r['result']['structuredContent']"
+if [[ -n "$FIXTURE" ]]; then
+  check "next_race names Saturday's card" "$(call next_race '{}')" \
+    "$answered and ('Saturday 17 October' in text or 'Caulfield' in text)"
+fi
 
 # Telemetry: /healthz reports what is served as JSON (servers since the telemetry change; the
 # fixture server always does), and a warm race card answers well inside a voice turn.

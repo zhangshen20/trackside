@@ -248,6 +248,18 @@
           return `<div class="item"><div class="t">${esc(h)}</div><div class="m">${e.length ? e.map((x) => `${esc(x.venue)} race ${esc(x.race_number)}${x.start_local ? " at " + esc(x.start_local) + (x.start_home ? " (" + esc(x.start_home) + " your time)" : "") : ""}${x.scratched ? " · scratched" : ""}${x.finished ? ` · finished ${x.finished === 1 ? '<span class="badge win">1st</span>' : esc(x.finished)}` : ""}`).join("; ") : next(h)}</div></div>`; }).join("") || '<div class="muted">No horses yet. Say "follow" and a horse\'s name.</div>'}
       </div>`;
     },
+    next_race(s) {
+      if (!("found" in s)) return null;
+      const n = s.next; if (!n) return `<h2>Next race</h2><div class="muted">No racing on file for today or tomorrow.</div>`;
+      const when = (u) => (u.start_local ? esc(u.start_local) + (u.home_time ? " (" + esc(u.home_time) + " your time)" : "") : "time to be confirmed");
+      const away = (u) => (u.minutes_until > 0 && u.minutes_until <= 180 ? `<span class="badge">in ${esc(u.minutes_until)} min</span>` : "");
+      const day = s.when === "today" ? "" : esc(fmtDate(n.date)) + " · ";
+      const near = s.next_anywhere ? `<div class="sub">Next anywhere: ${esc(s.next_anywhere.venue)} race ${esc(s.next_anywhere.race_number)} at ${when(s.next_anywhere)}</div>` : "";
+      return `<h2>${esc(n.venue)} race ${esc(n.race_number)} ${away(n)}</h2>
+        <div class="sub">${day}${[n.name, n.distance_m && n.distance_m + " m", n.state].filter(Boolean).map(esc).join(" · ")}</div>
+        <div class="facts"><div class="fact"><span>${s.next_anywhere ? "Near you, jumps" : "Jumps"}</span><b>${when(n)}</b></div></div>${near}
+        ${(s.then || []).length ? `<div class="sub">After that</div><div class="list">${s.then.map((u) => `<div class="item"><div class="t">${esc(u.venue)} race ${esc(u.race_number)} <span class="pill">${esc(u.state)}</span></div><div class="m">${when(u)}${u.name ? " · " + esc(u.name) : ""}</div></div>`).join("")}</div>` : ""}`;
+    },
     follow_horse(s) { return s.stable ? cards.my_stable({ stable: s.stable, date: "", remembered: s.remembered, upcoming: s.next ? [s.next] : [] }) : null; },
     unfollow_horse(s) { return s.stable ? cards.my_stable({ stable: s.stable, date: "" }) : null; },
     carnival_guide(s) {

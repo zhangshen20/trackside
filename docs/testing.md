@@ -54,6 +54,7 @@ Transport **Streamable HTTP**, URL as above, Connect. Then:
 | `horse_form` | `{"horse":"Jimmysstar (NZ)"}` |
 | `jockey_or_trainer_stats` | `{"name":"Ethan Brown","role":"jockey"}` |
 | `follow_horse` then `my_stable` | `{"horse":"Extragalactic"}`, then `{"date":"2026-09-27"}` |
+| `next_race` | `{}`, then `{"state":"NSW"}` |
 | `carnival_guide` | `{}` |
 
 The quickest real sign-in is `scripts/signin_check.py` on the Mac (stop Inspector first): it opens Cognito's page in the browser, and after you sign in or sign up it exchanges the code with PKCE and calls `follow_horse` and `my_stable` as that user.

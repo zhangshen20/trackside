@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use chrono::{Days, NaiveDate};
+use chrono::{DateTime, Days, NaiveDate, Utc};
 use rmcp::{
     handler::server::wrapper::Parameters, model::*, schemars, service::RequestContext, tool,
     tool_handler, tool_router, ErrorData as McpError, RoleServer, ServerHandler,
@@ -1340,6 +1340,195 @@ impl Trackside {
     }
 
     #[tool(
+        title = "Next race",
+        annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false),
+        input_schema = portable::<NextRaceArgs>(),
+        description = "The next race to jump, anywhere in Australia or in one state or at one venue: how far off it is, its start in the listener's own clock, and the races after it. Racing in the listener's remembered home state is read first. Use for 'what's the next race', 'what's next', 'when's the next race at Randwick', 'what's jumping now' or 'what's on next in Queensland'."
+    )]
+    async fn next_race(
+        &self,
+        ctx: RequestContext<RoleServer>,
+        Parameters(args): Parameters<NextRaceArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let state = match args.state.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(s) => {
+                let s = s.to_ascii_uppercase();
+                if !STATES.contains(&s.as_str()) {
+                    return Err(McpError::invalid_params(
+                        format!("state must be one of {}", STATES.join(", ")),
+                        None,
+                    ));
+                }
+                Some(s)
+            }
+        };
+        let home = self
+            .profile(&ctx)
+            .await
+            .home_state
+            .map(|h| h.trim().to_ascii_uppercase())
+            .filter(|h| STATES.contains(&h.as_str()));
+        let home = home.as_deref();
+        let today = self.today();
+        let tomorrow = today + Days::new(1);
+        // The venue as the day's meetings name it: today's first, then tomorrow's.
+        let mut venue = None;
+        if let Some(heard) = args
+            .venue
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            let mut named = heard.to_string();
+            for day in [today, tomorrow] {
+                let resolved = match self.resolve_venue(day, heard).await {
+                    Ok(v) => v,
+                    Err(ask) => return Ok(ask),
+                };
+                let meetings = self.store.meetings(day).await.map_err(internal)?;
+                if meetings.iter().any(|m| venue_matches(&m.venue, &resolved)) {
+                    named = resolved;
+                    break;
+                }
+            }
+            venue = Some(named);
+        }
+        let filter = RaceFilter {
+            state: state.as_deref(),
+            venue: venue.as_deref(),
+        };
+        let scope = match (&venue, &state) {
+            (Some(v), _) => format!(" at {v}"),
+            (None, Some(s)) => format!(" in {s}"),
+            (None, None) => String::new(),
+        };
+        let now = self.clock.now();
+        let (racing_today, left) = self.races_from(today, &filter, Some(now)).await?;
+        let ahead = if left.is_empty() {
+            self.races_from(tomorrow, &filter, None).await?.1
+        } else {
+            Vec::new()
+        };
+        // Nothing today or tomorrow: the next day in the fields' window that has racing.
+        let mut later = Vec::new();
+        if left.is_empty() && ahead.is_empty() {
+            let mut day = tomorrow + Days::new(1);
+            while later.is_empty() && day <= today + Days::new(LOOK_AHEAD_DAYS) {
+                later = self.races_from(day, &filter, None).await?.1;
+                day = day + Days::new(1);
+            }
+        }
+        let done = if racing_today {
+            format!("Racing{scope} is done for today")
+        } else {
+            format!("There's no racing{scope} on file for today")
+        };
+        let none = if racing_today {
+            format!("{done}, and I don't have any racing on file for tomorrow.")
+        } else {
+            format!("I don't have any racing{scope} on file for today or tomorrow.")
+        };
+        let mut anywhere = None;
+        let (spoken, next, then, when): (String, Option<&NextUp>, Vec<&NextUp>, &str) =
+            if let Some(first) = left.first() {
+                // A listener with a home state hears the next race there first, when the next
+                // anywhere is somewhere else and their own state still has racing today.
+                let near = home
+                    .filter(|_| filter.is_open())
+                    .filter(|h| first.state != *h)
+                    .and_then(|h| left.iter().find(|u| u.state == h));
+                let spoken = match near {
+                    Some(near) => {
+                        let at = self.start(today, &near.race.start_local, &near.state, home);
+                        let there = self.start(today, &first.race.start_local, &first.state, home);
+                        anywhere = Some(first);
+                        format!(
+                            "The next race near you is race {} at {}{}, at {}; the next anywhere is race {} at {} at {}.",
+                            near.race.race_number,
+                            near.venue,
+                            at.relative(),
+                            at_words(&at, home, false),
+                            first.race.race_number,
+                            first.venue,
+                            at_words(&there, home, false),
+                        )
+                    }
+                    None => {
+                        let at = self.start(today, &first.race.start_local, &first.state, home);
+                        let mut s = format!(
+                            "The next race{scope} is race {} at {}{}{}, at {}.",
+                            first.race.race_number,
+                            first.venue,
+                            race_words(&first.race),
+                            at.relative(),
+                            at_words(&at, home, true),
+                        );
+                        if let Some(after) = left.get(1) {
+                            let at = self.start(today, &after.race.start_local, &after.state, home);
+                            s.push_str(&format!(
+                                " After that, race {} at {} at {}.",
+                                after.race.race_number,
+                                after.venue,
+                                at_words(&at, home, false),
+                            ));
+                        }
+                        s
+                    }
+                };
+                let next = near.unwrap_or(first);
+                let then = left
+                    .iter()
+                    .filter(|u| !std::ptr::eq(*u, next))
+                    .take(3)
+                    .collect();
+                (spoken, Some(next), then, "today")
+            } else if let Some(first) = ahead.first() {
+                let at = self.start(tomorrow, &first.race.start_local, &first.state, home);
+                (
+                    format!(
+                        "{done}; tomorrow's first race is race {} at {} at {}.",
+                        first.race.race_number,
+                        first.venue,
+                        at_words(&at, home, true),
+                    ),
+                    Some(first),
+                    ahead.iter().skip(1).take(3).collect(),
+                    "tomorrow",
+                )
+            } else if let Some(first) = later.first() {
+                let at = self.start(first.date, &first.race.start_local, &first.state, home);
+                (
+                    format!(
+                        "{none} The next racing I have is on {}, starting with race {} at {} at {}.",
+                        first.date.format("%A %-d %B"),
+                        first.race.race_number,
+                        first.venue,
+                        at_words(&at, home, true),
+                    ),
+                    Some(first),
+                    later.iter().skip(1).take(3).collect(),
+                    "later",
+                )
+            } else {
+                (none, None, Vec::new(), "none")
+            };
+        Ok(answer(
+            format!("{spoken} Source: {SOURCE_RACING_AUSTRALIA}."),
+            json!({
+                "found": next.is_some(),
+                "when": when,
+                "next": next.map(|u| self.next_json(u, home)),
+                "then": then.iter().map(|u| self.next_json(u, home)).collect::<Vec<_>>(),
+                "next_anywhere": anywhere.map(|u| self.next_json(u, home)),
+                "home_state": home,
+                "state": state,
+                "venue": venue,
+            }),
+        ))
+    }
+
+    #[tool(
         title = "Home state",
         annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false),
         input_schema = portable::<StateArgs>(),
@@ -1996,5 +2185,131 @@ impl ServerHandler for Trackside {
                 .with_meta(meta)])
             .into(),
         )
+    }
+}
+
+// ---- next_race ----
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct NextRaceArgs {
+    /// Only racing in this state: VIC, NSW, QLD, SA, WA, TAS, NT or ACT. Optional.
+    pub state: Option<String>,
+    /// Only racing at this venue, e.g. "Randwick". Optional.
+    pub venue: Option<String>,
+}
+
+/// Which meetings a "next race" question is about: a state, a venue, or (neither) anywhere.
+struct RaceFilter<'a> {
+    state: Option<&'a str>,
+    venue: Option<&'a str>,
+}
+
+impl RaceFilter<'_> {
+    fn is_open(&self) -> bool {
+        self.state.is_none() && self.venue.is_none()
+    }
+
+    fn takes(&self, m: &Meeting) -> bool {
+        self.state.is_none_or(|s| m.state.eq_ignore_ascii_case(s))
+            && self.venue.is_none_or(|v| venue_matches(&m.venue, v))
+    }
+}
+
+/// One race still to jump, placed on the clock.
+struct NextUp {
+    date: NaiveDate,
+    at: DateTime<Utc>,
+    venue: String,
+    state: String,
+    race: RaceCard,
+}
+
+impl Trackside {
+    /// The races on `date` the filter takes, in jump order, from `after` on (all of them when
+    /// `after` is none), and whether the day had any racing the filter takes at all. A race
+    /// whose published start isn't a time can't be placed, so it is left out.
+    async fn races_from(
+        &self,
+        date: NaiveDate,
+        filter: &RaceFilter<'_>,
+        after: Option<DateTime<Utc>>,
+    ) -> Result<(bool, Vec<NextUp>), McpError> {
+        let meetings = self.store.meetings(date).await.map_err(internal)?;
+        let mut any = false;
+        let mut out = Vec::new();
+        for m in meetings.into_iter().filter(|m| filter.takes(m)) {
+            any |= !m.races.is_empty();
+            for race in m.races {
+                let Some(at) = trackside_core::start_instant(date, &race.start_local, &m.state)
+                else {
+                    continue;
+                };
+                if after.is_some_and(|now| at < now) {
+                    continue;
+                }
+                out.push(NextUp {
+                    date,
+                    at,
+                    venue: m.venue.clone(),
+                    state: m.state.to_ascii_uppercase(),
+                    race,
+                });
+            }
+        }
+        out.sort_by(|a, b| {
+            (a.at, &a.venue, a.race.race_number).cmp(&(b.at, &b.venue, b.race.race_number))
+        });
+        Ok((any, out))
+    }
+
+    /// A race to jump as a screen draws it.
+    fn next_json(&self, u: &NextUp, home: Option<&str>) -> serde_json::Value {
+        let start = self.start(u.date, &u.race.start_local, &u.state, home);
+        json!({
+            "date": u.date,
+            "venue": u.venue,
+            "state": u.state,
+            "race_number": u.race.race_number,
+            "name": u.race.name,
+            "distance_m": u.race.distance_m,
+            "start_local": u.race.start_local,
+            "start_utc": u.at.to_rfc3339(),
+            "minutes_until": (u.at - self.clock.now()).num_minutes(),
+            "home_time": start.start_home(),
+            "home_state": home,
+        })
+    }
+}
+
+/// When a race jumps, always with a clock named so a listener anywhere knows which one:
+/// "3:40 pm Melbourne time", or for a listener whose clock differs from the track's,
+/// "2:40 pm Perth time, 3:40 pm at the track" (`long`) or "2:40 pm Perth time".
+fn at_words(start: &Start, home: Option<&str>, long: bool) -> String {
+    let Some(venue) = start.venue.as_ref() else {
+        return "a time to be confirmed".into();
+    };
+    if start.home.is_some() {
+        let said = if long { start.long() } else { start.short() };
+        return said.unwrap_or_else(|| venue.clone());
+    }
+    match home
+        .and_then(trackside_core::zone_label)
+        .or_else(|| trackside_core::zone_label(&start.venue_state))
+    {
+        Some(label) => format!("{venue} {label}"),
+        None => venue.clone(),
+    }
+}
+
+/// ", the Caulfield Cup over 2400 metres", ", a race over 1200 metres", or nothing.
+fn race_words(card: &RaceCard) -> String {
+    let over = card
+        .distance_m
+        .map(|d| format!(" over {d} metres"))
+        .unwrap_or_default();
+    match (card.name.is_empty(), over.is_empty()) {
+        (false, _) => format!(", {}{over}", with_article(&card.name)),
+        (true, false) => format!(", a race{over}"),
+        (true, true) => String::new(),
     }
 }
