@@ -16,7 +16,7 @@ TRACKSIDE_STATELESS=1 TRACKSIDE_TODAY=2026-10-14 cargo run -p trackside-mcp   # 
 MCP_URL=http://127.0.0.1:8000/mcp scripts/smoke.sh --fixture
 ```
 
-It checks `initialize` (protocol 2025-11-25), `tools/list` (the core tools, each with a description), one call to every tool, the error paths (unknown tool, missing argument, unknown venue, bad date, unknown method) and that no answer mentions betting, odds or a bookmaker. It also fails when voice text has holes from empty fields (`"the Manikato Stakes,  over 1200 metres"`). Override the probe with `DATE`, `VENUE`, `RACE`, `HORSE`, `PERSON`, `ROLE` and `RESULT_*` when the snapshot moves. With OAuth on, run `MCP_TOKEN=$(scripts/token.sh) scripts/smoke.sh`: `token.sh` gets a client-credentials token from the stack's test-only smoke client (both scopes), and the smoke test adds three checks: a request without a token gets 401, and both metadata documents resolve.
+It checks `initialize` (protocol 2025-11-25), `tools/list` (the core tools, each with a description), one call to every tool, the error paths (unknown tool, missing argument, unknown venue, bad date, unknown method) and that no answer uses betting talk, a price or a bookmaker's name. It also fails when voice text has holes from empty fields (`"the Manikato Stakes,  over 1200 metres"`). Override the probe with `DATE`, `VENUE`, `RACE`, `HORSE`, `PERSON`, `ROLE` and `RESULT_*` when the snapshot moves. With OAuth on, run `MCP_TOKEN=$(scripts/token.sh) scripts/smoke.sh`: `token.sh` gets a client-credentials token from the stack's test-only smoke client (both scopes), and the smoke test adds three checks: a request without a token gets 401, and both metadata documents resolve.
 
 The script sends no `Mcp-Session-Id`, so a local server must run stateless, the way Lambda does. `TRACKSIDE_TODAY=2026-10-14` fixes the local server's clock on the Wednesday before the fixture's Caulfield Cup card, which the fixture check "my_stable names the next run" relies on ("Sample Stayer runs on Saturday in the Caulfield Cup"). Leave it unset for the deployed server, whose data is live. The simulator has its own pin, `TRACKSIDE_SIM_TODAY`, and shows "Saturday 17 October (simulated)" under its clock when it is set, so a viewer knows why "this Saturday" lands on snapshot racing.
 
@@ -68,7 +68,7 @@ Ask these, one per chat, and judge the answer as if it were spoken:
 8. Sign out, sign in again (or come back the next day) and ask "How's my stable?" (memory across sessions: the followed horse is still there, and the answer opens with what it has done since you last asked)
 9. "I'm in Sydney" then "What racing is on today?" (`set_home_state`; NSW meetings first, the rest by name)
 10. "Who's in the Caulfield Cup?" on the simulator: the screen shows the MCP App; tap a horse (its form opens, and the tool-call panel shows `MCP App → horse_form`), then Explain this race and Follow
-11. "Who should I back in race 8?" and "What are the odds for Giga Kick?" (the model must decline betting; no tool should ever return a price)
+11. "Who should I back in race 8?" and "What price is Giga Kick?" (the model must decline both and offer form instead; no tool should ever return a price)
 
 For each, note: right tool first time, arguments correct, answer short enough to say in one breath, source named, nothing about odds. Record anything odd in `docs/friction-log.md`.
 
