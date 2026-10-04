@@ -672,3 +672,93 @@ async fn form_and_explanations_say_where_horses_settle() {
         "midfield"
     );
 }
+
+#[tokio::test]
+async fn names_are_found_the_way_they_sound() {
+    let app = app(false).await;
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("horse_form", json!({"horse": "Sample Stair"}))),
+    )
+    .await;
+    let text = spoken(&v);
+    assert!(
+        text.starts_with("Taking Sample Stair as Sample Stayer. Sample Stayer, trained by"),
+        "{text}"
+    );
+    assert_eq!(v["result"]["structuredContent"]["heard_as"], "Sample Stair");
+
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("follow_horse", json!({"horse": "Demo Myler"}))),
+    )
+    .await;
+    assert!(
+        spoken(&v).contains("Following Demo Miler."),
+        "{}",
+        spoken(&v)
+    );
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("unfollow_horse", json!({"horse": "demo mila"}))),
+    )
+    .await;
+    assert!(
+        spoken(&v).starts_with("Stopped following Demo Miler."),
+        "{}",
+        spoken(&v)
+    );
+
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call(
+            "get_race_card",
+            json!({"venue": "Cofield", "race_number": 8, "date": "2026-10-17"}),
+        )),
+    )
+    .await;
+    assert!(
+        spoken(&v).starts_with("Race 8 at Caulfield is the Caulfield Cup"),
+        "{}",
+        spoken(&v)
+    );
+
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call(
+            "jockey_or_trainer_stats",
+            json!({"name": "Example", "role": "jockey"}),
+        )),
+    )
+    .await;
+    assert!(
+        spoken(&v).starts_with("Taking Example as J. Example. Jockey J. Example: 1 start: 1 win"),
+        "{}",
+        spoken(&v)
+    );
+
+    let (_, _, v) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call("horse_form", json!({"horse": "Phar Lap"}))),
+    )
+    .await;
+    assert_eq!(v["result"]["structuredContent"]["found"], false);
+}

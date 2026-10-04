@@ -5,6 +5,7 @@
 //! `source` so answers can be attributed ("According to Racing Australia…").
 
 pub mod model;
+pub mod names;
 pub mod store;
 
 pub use model::*;
