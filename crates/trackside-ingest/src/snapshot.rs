@@ -610,7 +610,7 @@ mod tests {
 
         let m = &fx.meetings[0];
         assert_eq!(m.venue, "Rosehill Gardens");
-        assert_eq!(m.races[0].name, "MIDWAY HANDICAP", "sponsor dropped");
+        assert_eq!(m.races[0].name, "Midway Handicap", "sponsor dropped");
         assert_eq!(m.track_condition.as_deref(), Some("Good 4"));
         assert_eq!(m.weather.as_deref(), Some("Overcast"));
         assert_eq!(m.races[0].runners[0].jockey, "Jane Rider");
