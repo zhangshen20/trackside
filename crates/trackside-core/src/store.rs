@@ -33,6 +33,23 @@ pub trait Store: Send + Sync {
         from: Option<NaiveDate>,
         to: Option<NaiveDate>,
     ) -> Result<Option<PersonStats>>;
+
+    /// Horses whose names sound like `heard`, closest first, for "did you mean". The default
+    /// store knows none.
+    async fn similar_horses(&self, _heard: &str, _limit: usize) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
+
+    /// Jockeys or trainers whose names sound like `heard` (a surname alone will do),
+    /// closest first.
+    async fn similar_people(
+        &self,
+        _heard: &str,
+        _role: &str,
+        _limit: usize,
+    ) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
 }
 
 /// The on-disk fixture shape: a bundle of meetings, form and results for demos and tests.
@@ -217,6 +234,56 @@ impl Store for FixtureStore {
                 r.date == date && venue_matches(&r.venue, venue) && r.race_number == race_number
             })
             .cloned())
+    }
+
+    async fn similar_horses(&self, heard: &str, limit: usize) -> Result<Vec<String>> {
+        Ok(crate::names::closest(
+            heard,
+            self.fixture.form.iter().map(|f| f.horse.as_str()),
+            limit,
+        )
+        .into_iter()
+        .map(|(n, _)| n.to_string())
+        .collect())
+    }
+
+    async fn similar_people(&self, heard: &str, role: &str, limit: usize) -> Result<Vec<String>> {
+        let mut names: Vec<&str> = Vec::new();
+        for m in &self.fixture.meetings {
+            for r in m.races.iter().flat_map(|r| r.runners.iter()) {
+                names.push(if role == "trainer" {
+                    &r.trainer
+                } else {
+                    &r.jockey
+                });
+            }
+        }
+        if role == "trainer" {
+            names.extend(self.fixture.form.iter().map(|f| f.trainer.as_str()));
+        } else {
+            names.extend(
+                self.fixture
+                    .results
+                    .iter()
+                    .flat_map(|r| r.placings.iter().map(|p| p.jockey.as_str())),
+            );
+        }
+        names.retain(|n| !n.trim().is_empty());
+        names.sort_unstable();
+        names.dedup();
+        let found = crate::names::closest(heard, names.iter().copied(), limit);
+        if !found.is_empty() || heard.split_whitespace().count() != 1 {
+            return Ok(found.into_iter().map(|(n, _)| n.to_string()).collect());
+        }
+        // A surname alone: "how's Kah going".
+        let surname = |n: &str| n.split_whitespace().last().unwrap_or("").to_string();
+        let mut by_surname: Vec<&str> = names
+            .iter()
+            .copied()
+            .filter(|n| crate::names::sounds_like(heard, &surname(n)) == Some(0))
+            .collect();
+        by_surname.truncate(limit);
+        Ok(by_surname.into_iter().map(str::to_string).collect())
     }
 
     async fn person_stats(

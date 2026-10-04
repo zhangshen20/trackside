@@ -94,6 +94,10 @@ Trackside reads races the way a race caller does, from sectional data:
 - **Form** names where a horse was at the 800 in each recent start and its habit over its last six runs: it usually leads, races on the pace, settles midfield, or settles back and runs on.
 - **Race cards and explanations** group the field by those habits ("On past runs, Placeholder Prince usually leads, and Demo Miler usually settles back in the field"). The MCP App draws it as a map of the field. It describes past runs only and never says how a race will be run.
 
+## Names the way they're heard
+
+Speech recognition respells racing names: "Jimmy's Star" for Jimmysstar, "Cofield" for Caulfield, "Demo Myla" for Demo Miler. When a horse, jockey, trainer or venue isn't found as spelt, Trackside compares names by sound (spaces and punctuation squashed, common spellings of one sound folded together, a dropped Australian final "r", then a small edit distance). One clear match is used and said aloud ("Taking Jimmy Star as Jimmysstar"); several close ones get "Did you mean A or B?"; a surname alone finds a jockey or trainer. See `crates/trackside-core/src/names.rs`.
+
 ## Memory
 
 Trackside remembers each signed-in listener between sessions, keyed by their Cognito subject in a DynamoDB table (`trackside-listeners`, on-demand, encrypted): the horses they follow, their home state, and the day they last heard their stable report. So a conversation can pick up where the last one left off:

@@ -18,6 +18,8 @@ use trackside_core::{
     SOURCE_RACING_AUSTRALIA, SOURCE_SECTIONALS,
 };
 
+use trackside_core::{names, HorseForm};
+
 use crate::auth::Caller;
 use crate::memory::{Memory, Profile};
 use crate::summary::Summariser;
@@ -280,9 +282,10 @@ impl Trackside {
     )]
     async fn get_race_card(
         &self,
-        Parameters(args): Parameters<RaceArgs>,
+        Parameters(mut args): Parameters<RaceArgs>,
     ) -> Result<CallToolResult, McpError> {
         let date = parse_date(&args.date)?;
+        args.venue = self.resolve_venue(date, &args.venue).await;
         let Some(card) = self
             .store
             .race_card(date, &args.venue, args.race_number)
@@ -354,11 +357,15 @@ impl Trackside {
         &self,
         Parameters(args): Parameters<HorseArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let Some(form) = self.store.horse_form(&args.horse).await.map_err(internal)? else {
-            return Ok(answer(
-                format!("I don't have form on file for {}.", args.horse),
-                json!({ "found": false }),
-            ));
+        let (form, heard_as) = match self.find_horse(&args.horse).await? {
+            HorseLookup::Found(form, heard_as) => (form, heard_as),
+            HorseLookup::Unsure(names) => return Ok(did_you_mean(&args.horse, &names)),
+            HorseLookup::Missing => {
+                return Ok(answer(
+                    format!("I don't have form on file for {}.", args.horse),
+                    json!({ "found": false }),
+                ))
+            }
         };
         let recent = form
             .starts
@@ -437,14 +444,15 @@ impl Trackside {
             .map(|st| format!(" In its races it {}.", st.phrase))
             .unwrap_or_default();
         let spoken = format!(
-            "{}, trained by {}. Career {}.{first_up}{going}{habit}{recent} Source: {SOURCE_RACING_AUSTRALIA}.",
+            "{}{}, trained by {}. Career {}.{first_up}{going}{habit}{recent} Source: {SOURCE_RACING_AUSTRALIA}.",
+            heard_note(&heard_as, &form.horse),
             form.horse,
             form.trainer,
             form.career.summary()
         );
         Ok(answer(
             spoken,
-            json!({ "found": true, "source": SOURCE_RACING_AUSTRALIA, "form": form, "run_style": style }),
+            json!({ "found": true, "source": SOURCE_RACING_AUSTRALIA, "heard_as": heard_as, "form": form, "run_style": style }),
         ))
     }
 
@@ -454,9 +462,10 @@ impl Trackside {
     )]
     async fn explain_race(
         &self,
-        Parameters(args): Parameters<RaceArgs>,
+        Parameters(mut args): Parameters<RaceArgs>,
     ) -> Result<CallToolResult, McpError> {
         let date = parse_date(&args.date)?;
+        args.venue = self.resolve_venue(date, &args.venue).await;
         let Some(card) = self
             .store
             .race_card(date, &args.venue, args.race_number)
@@ -544,9 +553,10 @@ impl Trackside {
     )]
     async fn race_result(
         &self,
-        Parameters(args): Parameters<RaceArgs>,
+        Parameters(mut args): Parameters<RaceArgs>,
     ) -> Result<CallToolResult, McpError> {
         let date = parse_date(&args.date)?;
+        args.venue = self.resolve_venue(date, &args.venue).await;
         let Some(result) = self
             .store
             .race_result(date, &args.venue, args.race_number)
@@ -633,12 +643,33 @@ impl Trackside {
         }
         let from = parse_opt_date(&args.from)?;
         let to = parse_opt_date(&args.to)?;
-        let Some(stats) = self
+        let mut stats = self
             .store
             .person_stats(&args.name, &role, from, to)
             .await
-            .map_err(internal)?
-        else {
+            .map_err(internal)?;
+        let mut heard_as = None;
+        if stats.is_none() {
+            // Not that spelling: try the names that sound like it, or ask.
+            let similar = self
+                .store
+                .similar_people(&args.name, &role, 3)
+                .await
+                .map_err(internal)?;
+            match similar.as_slice() {
+                [] => {}
+                [one] => {
+                    stats = self
+                        .store
+                        .person_stats(one, &role, from, to)
+                        .await
+                        .map_err(internal)?;
+                    heard_as = stats.is_some().then(|| args.name.clone());
+                }
+                many => return Ok(did_you_mean(&args.name, many)),
+            }
+        }
+        let Some(stats) = stats else {
             return Ok(answer(
                 format!("I have no results on file for {} {}.", role, args.name),
                 json!({ "found": false }),
@@ -650,14 +681,15 @@ impl Trackside {
             0.0
         };
         let spoken = format!(
-            "{} {}: {}, a {strike:.0} percent strike rate. Source: {SOURCE_RACING_AUSTRALIA}.",
+            "{}{} {}: {}, a {strike:.0} percent strike rate. Source: {SOURCE_RACING_AUSTRALIA}.",
+            heard_note(&heard_as, &stats.name),
             capitalise(&role),
             stats.name,
             stats.record.summary()
         );
         Ok(answer(
             spoken,
-            json!({ "found": true, "source": SOURCE_RACING_AUSTRALIA, "stats": stats }),
+            json!({ "found": true, "source": SOURCE_RACING_AUSTRALIA, "heard_as": heard_as, "stats": stats }),
         ))
     }
 
@@ -669,16 +701,13 @@ impl Trackside {
         ctx: RequestContext<RoleServer>,
         Parameters(args): Parameters<HorseArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let Some(form) = self
-            .store
-            .horse_form(args.horse.trim())
-            .await
-            .map_err(internal)?
-        else {
-            return Ok(answer(
+        let (form, heard_as) = match self.find_horse(args.horse.trim()).await? {
+            HorseLookup::Found(form, heard_as) => (form, heard_as),
+            HorseLookup::Unsure(names) => return Ok(did_you_mean(&args.horse, &names)),
+            HorseLookup::Missing => return Ok(answer(
                 format!("I can't find a horse called {} in the form guide, so I haven't added it. Check the spelling, or ask me who's running in a race.", args.horse.trim()),
                 json!({ "found": false }),
-            ));
+            )),
         };
         let name = form.horse;
         let user = caller_key(&ctx);
@@ -702,7 +731,8 @@ impl Trackside {
         };
         Ok(answer(
             format!(
-                "Following {name}. You now follow {n} horse{}.{remember}",
+                "{}Following {name}. You now follow {n} horse{}.{remember}",
+                heard_note(&heard_as, &name),
                 if n == 1 { "" } else { "s" }
             ),
             json!({ "found": true, "stable": profile.horses, "remembered": self.memory.durable() }),
@@ -720,7 +750,15 @@ impl Trackside {
         let user = caller_key(&ctx);
         let mut profile = self.memory.load(&user).await.map_err(internal)?;
         let key = horse_key(&args.horse);
-        let Some(i) = profile.horses.iter().position(|h| horse_key(h) == key) else {
+        let found = profile
+            .horses
+            .iter()
+            .position(|h| horse_key(h) == key)
+            .or_else(|| {
+                let best = names::best(&args.horse, profile.horses.iter().map(String::as_str))?;
+                profile.horses.iter().position(|h| h == best)
+            });
+        let Some(i) = found else {
             let following = match profile.horses.as_slice() {
                 [] => "You aren't following any horses.".to_string(),
                 hs => format!("You follow {}.", spoken_list(hs)),
@@ -957,6 +995,58 @@ impl Trackside {
 }
 
 impl Trackside {
+    /// A horse by the name as heard: exactly, or the one name that sounds like it, or the
+    /// few that might be meant.
+    async fn find_horse(&self, heard: &str) -> Result<HorseLookup, McpError> {
+        if let Some(form) = self.store.horse_form(heard).await.map_err(internal)? {
+            return Ok(HorseLookup::Found(form, None));
+        }
+        let similar = self
+            .store
+            .similar_horses(heard, 3)
+            .await
+            .map_err(internal)?;
+        let Some(name) = names::best(heard, similar.iter().map(String::as_str)) else {
+            return Ok(match similar.is_empty() {
+                true => HorseLookup::Missing,
+                false => HorseLookup::Unsure(similar),
+            });
+        };
+        Ok(match self.store.horse_form(name).await.map_err(internal)? {
+            Some(form) => HorseLookup::Found(form, Some(heard.trim().to_string())),
+            None => HorseLookup::Missing,
+        })
+    }
+
+    /// The venue as the day's meetings name it: as said when it matches one, otherwise the
+    /// one that sounds like it ("Cofield" is Caulfield). Unchanged when nothing does.
+    async fn resolve_venue(&self, date: NaiveDate, heard: &str) -> String {
+        let meetings = self.store.meetings(date).await.unwrap_or_default();
+        if meetings.iter().any(|m| venue_matches(&m.venue, heard)) {
+            return heard.to_string();
+        }
+        // A venue answers to its full name and to its leading or trailing words
+        // ("Rosehill" for "Rosehill Gardens", "Murray Bridge" for "Thomas Farms RC Murray Bridge").
+        let mut forms: Vec<(String, &str)> = Vec::new();
+        for m in &meetings {
+            let words: Vec<&str> = m.venue.split_whitespace().collect();
+            for k in 1..=words.len() {
+                forms.push((words[..k].join(" "), &m.venue));
+                forms.push((words[words.len() - k..].join(" "), &m.venue));
+            }
+        }
+        let best = names::closest(heard, forms.iter().map(|(f, _)| f.as_str()), 8);
+        let venues: Vec<&str> = best
+            .iter()
+            .filter(|(_, d)| *d == best[0].1)
+            .filter_map(|(f, _)| forms.iter().find(|(x, _)| x == f).map(|(_, v)| *v))
+            .collect();
+        match venues.first() {
+            Some(v) if venues.iter().all(|x| x == v) => v.to_string(),
+            _ => heard.to_string(),
+        }
+    }
+
     /// Each runner's usual run style from its form, in saddlecloth order.
     async fn run_styles(&self, card: &RaceCard) -> Vec<(u32, String, Option<RunStyle>)> {
         let mut out = Vec::new();
@@ -1098,6 +1188,37 @@ fn pace_sentence(styles: &[(u32, String, Option<RunStyle>)]) -> String {
         (false, None) => format!(" On past runs, {front}."),
         (false, Some(r)) => format!(" On past runs, {front}, and {r}."),
     }
+}
+
+enum HorseLookup {
+    /// The horse's form, and the name as heard when it wasn't spelt that way.
+    Found(HorseForm, Option<String>),
+    /// Several horses sound like it.
+    Unsure(Vec<String>),
+    Missing,
+}
+
+/// "Taking Jimmy Star as Jimmysstar. " when the name was matched by sound, so the listener
+/// knows which horse they're hearing about.
+fn heard_note(heard_as: &Option<String>, name: &str) -> String {
+    match heard_as {
+        Some(h) if horse_key(h) != horse_key(name) => format!("Taking {h} as {name}. "),
+        _ => String::new(),
+    }
+}
+
+fn did_you_mean(heard: &str, names: &[String]) -> CallToolResult {
+    let options: Vec<String> = names.to_vec();
+    let spoken = format!(
+        "I couldn't place {}. Did you mean {}?",
+        heard.trim(),
+        match options.as_slice() {
+            [one] => one.clone(),
+            [init @ .., last] => format!("{} or {last}", init.join(", ")),
+            [] => String::new(),
+        }
+    );
+    answer(spoken, json!({ "found": false, "did_you_mean": options }))
 }
 
 /// One runner's race, for "how it was run".
