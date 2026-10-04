@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ops::RangeInclusive;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -7,6 +8,7 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
 use crate::model::*;
+use crate::names::NameMatch;
 
 /// Read-only access to racing facts. The MCP server only ever talks to this trait, so the
 /// backing data (a JSON fixture today, the S3-fed store in production) is swappable.
@@ -55,6 +57,42 @@ pub trait Store: Send + Sync {
         Ok(out)
     }
 
+    /// The races in the published fields between the window's first and last days whose
+    /// names match `heard` ("Cofield Cup", "the Manikato"), best first: the closest name,
+    /// then a graded race before an ungraded one, then the day nearest `around`.
+    async fn find_races(
+        &self,
+        heard: &str,
+        around: NaiveDate,
+        window: RangeInclusive<NaiveDate>,
+    ) -> Result<Vec<RaceRef>> {
+        let mut out = Vec::new();
+        let mut day = *window.start();
+        while day <= *window.end() {
+            for m in self.meetings(day).await? {
+                for r in &m.races {
+                    if let Some(matched) = crate::names::race_name_match(heard, &r.name) {
+                        out.push(RaceRef {
+                            date: m.date,
+                            venue: m.venue.clone(),
+                            state: m.state.clone(),
+                            race_number: r.race_number,
+                            name: r.name.clone(),
+                            grade: r.grade.clone(),
+                            matched,
+                        });
+                    }
+                }
+            }
+            match day.succ_opt() {
+                Some(next) => day = next,
+                None => break,
+            }
+        }
+        out.sort_by_key(|r| r.rank(around));
+        Ok(out)
+    }
+
     /// Horses whose names sound like `heard`, closest first, for "did you mean". The default
     /// store knows none.
     async fn similar_horses(&self, _heard: &str, _limit: usize) -> Result<Vec<String>> {
@@ -70,6 +108,30 @@ pub trait Store: Send + Sync {
         _limit: usize,
     ) -> Result<Vec<String>> {
         Ok(vec![])
+    }
+}
+
+/// A race found by its name: where and when it is, and how well the name heard matched.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct RaceRef {
+    pub date: NaiveDate,
+    pub venue: String,
+    pub state: String,
+    pub race_number: u32,
+    pub name: String,
+    pub grade: String,
+    pub matched: NameMatch,
+}
+
+impl RaceRef {
+    /// The order races found by name are offered in: the closest name, a graded race, the
+    /// day nearest `around`.
+    pub fn rank(&self, around: NaiveDate) -> (NameMatch, bool, i64) {
+        (
+            self.matched,
+            self.grade.trim().is_empty(),
+            (self.date - around).num_days().abs(),
+        )
     }
 }
 
@@ -482,6 +544,60 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn races_are_found_by_name_best_first() {
+        let race = |n: u32, name: &str, grade: &str| RaceCard {
+            race_number: n,
+            name: name.into(),
+            grade: grade.into(),
+            ..Default::default()
+        };
+        let meeting = |date: &str, venue: &str, races: Vec<RaceCard>| Meeting {
+            date: date.parse().unwrap(),
+            venue: venue.into(),
+            races,
+            ..Default::default()
+        };
+        let store = FixtureStore::from_fixture(Fixture {
+            meetings: vec![
+                meeting(
+                    "2026-10-10",
+                    "Caulfield",
+                    vec![
+                        race(7, "Caulfield Guineas", "Group 1"),
+                        race(3, "Caulfield Cup Prelude Plate", ""),
+                    ],
+                ),
+                meeting(
+                    "2026-10-17",
+                    "Caulfield",
+                    vec![race(8, "Caulfield Cup", "Group 1")],
+                ),
+                meeting(
+                    "2026-10-30",
+                    "Flemington",
+                    vec![race(1, "Caulfield Cup", "")],
+                ),
+            ],
+            ..Default::default()
+        });
+        let d = |s: &str| s.parse::<NaiveDate>().unwrap();
+        let found = store
+            .find_races(
+                "Cofield Cup",
+                d("2026-10-14"),
+                d("2026-10-07")..=d("2026-10-18"),
+            )
+            .await
+            .unwrap();
+        // The Cup first; the Guineas only on its shared word; the 30th is out of the window.
+        assert_eq!(found[0].race_number, 8);
+        assert_eq!(found[0].venue, "Caulfield");
+        assert!(matches!(found[0].matched, NameMatch::Sound(_)));
+        assert!(found.iter().all(|r| r.date <= d("2026-10-18")));
+        assert!(found[1..].iter().all(|r| r.matched > found[0].matched));
     }
 
     #[tokio::test]

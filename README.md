@@ -69,10 +69,10 @@ To serve it on your own hostname, run the script once with `TRACKSIDE_DOMAIN=mcp
 | Tool | Answers |
 | --- | --- |
 | `list_meetings` | meetings on a date, track condition, first race (in your own clock when your state keeps a different time) |
-| `get_race_card` | one race's conditions and full field, when it jumps in your clock and the venue's ("4 pm Queensland time, 5 pm at the track, due to jump in about 25 minutes"), with the MCP App on screens |
+| `get_race_card` | one race, asked for by name ("the Caulfield Cup", or "Cofield Cup" as heard) or by venue and number: its conditions and full field, when it jumps in your clock and the venue's ("4 pm Queensland time, 5 pm at the track, due to jump in about 25 minutes"), with the MCP App on screens |
 | `horse_form` | career and condition records, recent starts with where it was at the 800, last-600 m times, and where it usually settles |
-| `explain_race` | what a race is, why it matters, the strongest recent form and where the field usually settles |
-| `race_result` | placings, margins, time, and how it was run: where the placegetters were at the 800 and their last 600 m |
+| `explain_race` | a race by name or number: what it is, why it matters, the strongest recent form and where the field usually settles; a carnival race whose field is not out yet is answered from the guide ("The Cox Plate is on Saturday 24 October at Moonee Valley; fields come out on the Wednesday before") |
+| `race_result` | a race by name or number: placings, margins, time, and how it was run: where the placegetters were at the 800 and their last 600 m |
 | `jockey_or_trainer_stats` | wins and places over a period |
 | `follow_horse` / `unfollow_horse` / `my_stable` | a stable of followed horses, remembered across sessions: what they've done since you last asked, today's engagements and results, and where each horse runs next ("runs on Saturday in the Caulfield Cup, race 8 at Caulfield at 5 pm, barrier 4") |
 | `next_race` | the next race to jump, anywhere or in one state or at one venue, how far off it is and its start in your clock ("race 8 at Caulfield, due to jump in about 25 minutes, at 4 pm Queensland time, 5 pm at the track"), with racing in your home state first; after the last race, tomorrow's first |
