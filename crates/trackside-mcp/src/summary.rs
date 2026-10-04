@@ -23,7 +23,8 @@ Never mention odds, prices, betting, wagering, tips, bookmakers or who will win.
 Describe past form only: never call a runner a chance, a contender or a favourite, or say how it might go. \
 where_they_usually_settle says where runners have settled in past races; you may say that, but never predict how this race will be run.";
 
-/// Words that mean the model has drifted into betting talk; the answer is dropped.
+/// Words that mean the model has drifted into betting talk or into rating a runner's
+/// prospects; the answer is dropped.
 const BANNED: &[&str] = &[
     "odds",
     "bet",
@@ -41,6 +42,25 @@ const BANNED: &[&str] = &[
     "favorite",
     "each-way",
     "value",
+    "chance",
+    "chances",
+    "contender",
+    "contenders",
+    "likely",
+];
+
+/// Phrases that predict how a race will go. The pace facts the model is given describe past
+/// runs only, and so must its answer.
+const BANNED_PHRASES: &[&str] = &[
+    "will lead",
+    "should lead",
+    "will win",
+    "should win",
+    "likely to",
+    "expect",
+    "hard to beat",
+    "hard to run down",
+    "the one to beat",
 ];
 
 pub struct Summariser {
@@ -112,7 +132,8 @@ impl Summariser {
     }
 }
 
-/// The model's text as one spoken paragraph, or an error when it is empty or talks betting.
+/// The model's text as one spoken paragraph, or an error when it is empty, talks betting or
+/// predicts the race.
 pub fn clean(text: &str) -> Result<String> {
     let spoken = text
         .split_whitespace()
@@ -128,6 +149,9 @@ pub fn clean(text: &str) -> Result<String> {
         .find(|w| BANNED.contains(w))
     {
         bail!("explanation used the word {word:?}");
+    }
+    if let Some(phrase) = BANNED_PHRASES.iter().find(|p| lower.contains(*p)) {
+        bail!("explanation used the phrase {phrase:?}");
     }
     if spoken.contains('$') {
         bail!("explanation mentioned money");
@@ -155,7 +179,15 @@ mod tests {
         assert!(clean("Good value each-way.").is_err());
         assert!(clean("Worth $3 million.").is_err());
         assert!(clean("").is_err());
+        // Rating a runner's prospects, or saying how the race will be run, is dropped too.
+        assert!(clean("Sample Stayer is a leading chance.").is_err());
+        assert!(clean("Placeholder Prince will lead and should be hard to run down.").is_err());
+        assert!(clean("Expect Demo Miler to settle back.").is_err());
         // "better" and "tipping point" share letters, not words.
         assert!(clean("It raced better on a softer track.").is_ok());
+        // Past runs may be described.
+        assert!(
+            clean("Placeholder Prince led at the 800 in each of its last three starts.").is_ok()
+        );
     }
 }
