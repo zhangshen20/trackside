@@ -370,3 +370,25 @@ async fn stable_reports_results_for_races_already_run() {
         "{text}"
     );
 }
+
+#[tokio::test]
+async fn missing_result_says_when_there_was_no_meeting() {
+    let app = app(false).await;
+    let (_, _, out) = send(
+        &app,
+        "POST",
+        "/mcp",
+        None,
+        Some(call(
+            "race_result",
+            json!({"venue": "Flemington", "race_number": 6, "date": "2026-10-17"}),
+        )),
+    )
+    .await;
+    let text = spoken(&out);
+    assert!(
+        text.starts_with("There was no racing at Flemington on Saturday 17 October."),
+        "{text}"
+    );
+    assert!(text.contains("Caulfield"), "{text}");
+}

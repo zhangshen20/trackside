@@ -34,16 +34,24 @@ pub const BOOKMAKER_BRANDS: &[&str] = &[
 /// Remove wagering brands from a race, venue or class name, keeping the rest as written.
 /// Horse and people's names are never passed through this.
 pub fn without_bookmakers(s: &str) -> String {
-    let kept: Vec<&str> = s
+    let is_brand = |w: &str| {
+        let bare: String = w
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_ascii_lowercase();
+        BOOKMAKER_BRANDS.contains(&bare.as_str())
+    };
+    // A brand can also be hyphenated onto a name ("SPORTSBET-BALLARAT"); other hyphens stay.
+    let kept: Vec<String> = s
         .split_whitespace()
-        .filter(|w| {
-            let bare: String = w
-                .chars()
-                .filter(|c| c.is_ascii_alphanumeric())
-                .collect::<String>()
-                .to_ascii_lowercase();
-            !BOOKMAKER_BRANDS.contains(&bare.as_str())
+        .map(|w| {
+            w.split('-')
+                .filter(|part| !is_brand(part))
+                .collect::<Vec<_>>()
+                .join("-")
         })
+        .filter(|w| !w.trim_matches('-').is_empty())
         .collect();
     kept.join(" ")
         .trim_matches(|c: char| c == '-' || c == ',' || c.is_whitespace())
@@ -282,6 +290,8 @@ mod tests {
     #[test]
     fn bookmaker_brands_are_removed_from_names() {
         assert_eq!(without_bookmakers("SPORTSBET LONGREACH"), "LONGREACH");
+        assert_eq!(without_bookmakers("SPORTSBET-BALLARAT"), "BALLARAT");
+        assert_eq!(without_bookmakers("Come-by-chance"), "Come-by-chance");
         assert_eq!(without_bookmakers("TAB HANDICAP"), "HANDICAP");
         assert_eq!(
             without_bookmakers("Ladbrokes - Fast Form Plate"),

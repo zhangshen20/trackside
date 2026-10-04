@@ -232,13 +232,9 @@ impl Trackside {
             .await
             .map_err(internal)?
         else {
-            return Ok(answer(
-                format!(
-                    "I can't find race {} at {} on {}.",
-                    args.race_number, args.venue, date
-                ),
-                json!({ "found": false }),
-            ));
+            return Ok(self
+                .missing_race(date, &args.venue, args.race_number, false)
+                .await);
         };
         let runners = card.runners.iter().filter(|r| !r.scratched).count();
         let scratched: Vec<_> = card
@@ -390,13 +386,9 @@ impl Trackside {
             .await
             .map_err(internal)?
         else {
-            return Ok(answer(
-                format!(
-                    "I can't find race {} at {} on {}.",
-                    args.race_number, args.venue, date
-                ),
-                json!({ "found": false }),
-            ));
+            return Ok(self
+                .missing_race(date, &args.venue, args.race_number, false)
+                .await);
         };
         let feature = spring_carnival_2026()
             .into_iter()
@@ -479,13 +471,9 @@ impl Trackside {
             .await
             .map_err(internal)?
         else {
-            return Ok(answer(
-                format!(
-                    "No result yet for race {} at {} on {}.",
-                    args.race_number, args.venue, date
-                ),
-                json!({ "found": false }),
-            ));
+            return Ok(self
+                .missing_race(date, &args.venue, args.race_number, true)
+                .await);
         };
         // Voice reads the placegetters; the full finishing order stays in structured content.
         let placings = result
@@ -747,6 +735,66 @@ impl Trackside {
 }
 
 impl Trackside {
+    /// Why a race can't be found, in words that help the next question: no racing at that
+    /// venue that day (and where there was), no such race on the card, or not run yet.
+    async fn missing_race(
+        &self,
+        date: NaiveDate,
+        venue: &str,
+        race_number: u32,
+        want_result: bool,
+    ) -> CallToolResult {
+        let day = date.format("%A %-d %B").to_string();
+        let meetings = self.store.meetings(date).await.unwrap_or_default();
+        let venues: Vec<String> = meetings.iter().map(|m| m.venue.clone()).collect();
+        let structured = json!({ "found": false, "date": date, "venue": venue, "race_number": race_number, "meetings_that_day": venues });
+        let Some(meeting) = meetings.iter().find(|m| venue_matches(&m.venue, venue)) else {
+            let spoken = if venues.is_empty() {
+                format!("I don't have any meetings on {day}. Fields are published two to three days ahead, and I only hold recent racing.")
+            } else {
+                // Voice gets a handful; the full list is in the structured content.
+                let named = venues
+                    .iter()
+                    .take(5)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let more = match venues.len().saturating_sub(5) {
+                    0 => String::new(),
+                    n => format!(" and {n} more"),
+                };
+                format!("There was no racing at {venue} on {day}. Meetings that day include {named}{more}.")
+            };
+            return answer(spoken, structured);
+        };
+        if !meeting.races.iter().any(|r| r.race_number == race_number) {
+            return answer(
+                format!(
+                    "{} on {day} has {} races, so there's no race {race_number}.",
+                    meeting.venue,
+                    meeting.races.len()
+                ),
+                structured,
+            );
+        }
+        let today = Utc::now().with_timezone(&Melbourne).date_naive();
+        let spoken = match (want_result, date >= today) {
+            (true, true) => format!(
+                "Race {race_number} at {} on {day} hasn't been run yet, or its result isn't in.",
+                meeting.venue
+            ),
+            (true, false) => format!(
+                "I don't have the result of race {race_number} at {} on {day}.",
+                meeting.venue
+            ),
+            (false, _) => format!(
+                "I can't find race {race_number} at {} on {day}.",
+                meeting.venue
+            ),
+        };
+        answer(spoken, structured)
+    }
+
     async fn track_condition(&self, date: NaiveDate, venue: &str) -> String {
         self.store
             .meetings(date)
