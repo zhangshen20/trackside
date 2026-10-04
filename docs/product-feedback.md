@@ -32,6 +32,12 @@ The hackathon asks every entry for feedback on each tool, API or SDK used. This 
 - **API Gateway buffers responses**, so Streamable HTTP's server-sent events can't stream through a Lambda integration. A note in the Alexa+ quickstart on which AWS front doors suit Streamable HTTP would help.
 - **Rust on Lambda** needs `cargo-lambda` or `cargo-zigbuild` plus Zig for arm64; there is no official build image or `sam build` path for Rust.
 - **Bedrock from Rust:** converting tool schemas and inputs between `serde_json::Value` and the SDK's `Document` type is manual, and choosing between the foundation model, `apac.`, `au.` and `global.` IDs, with the IAM each one needs, took trial and error.
+- **MCP Apps on Alexa+ screens are undocumented.** Nothing says whether an Echo Show hosts MCP Apps or which `_meta` key it reads, so the server sets both spellings. See [the friction log](friction-log.md#mcp-apps-on-an-echo-show-are-undocumented).
+- **EventBridge rule cron is UTC only.** The twice-daily refresh drifts an hour against Melbourne when daylight saving starts. See [the friction log](friction-log.md#eventbridge-rule-cron-has-no-time-zone).
+- **Bedrock Converse tool schemas need patching.** The simulator adds `type: object` and `properties` and drops `$schema` before every call. See [the friction log](friction-log.md#tool-schemas-patched-for-bedrock-converse).
+- **Lambda has no call to retire warm instances.** The snapshot refresh touches the function description to force a reload. See [the friction log](friction-log.md#lambda-has-no-call-to-retire-warm-instances).
+- **API Gateway's 30 s integration ceiling** bounds the simulator's agent loop and any slow Bedrock call. See [the friction log](friction-log.md#api-gateway-caps-a-simulator-turn-at-30-seconds).
+- **Claude Code Remote Control refused the deploy script** as a production deploy, because `aws cloudformation deploy` has no dry run. See [the friction log](friction-log.md#remote-control-refused-the-deploy-script-as-a-production-deploy).
 
 ## How was the onboarding (zero to hello world)?
 
