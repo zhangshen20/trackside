@@ -1,0 +1,37 @@
+[package]
+name = "mcp-cognito-auth"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+description = "Make an MCP server an OAuth 2.1 protected resource backed by Amazon Cognito: token checks, two-tier scopes and RFC 9728 / RFC 8414 metadata for axum and rmcp"
+repository = "https://github.com/zhangshen20/mcp-cognito-auth"
+readme = "README.md"
+keywords = ["mcp", "oauth", "cognito", "axum", "lambda"]
+categories = ["authentication", "web-programming::http-server"]
+exclude = [".github"]
+
+# Standalone: not part of the Trackside workspace it was extracted from.
+[workspace]
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["json"] }
+http = "1"
+jsonwebtoken = "9"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync"] }
+tracing = "0.1"
+
+[dev-dependencies]
+axum = { version = "0.8", features = ["macros"] }
+base64 = "0.22"
+lambda_http = "1"
+rand = "0.8"
+rmcp = { version = "3.5", features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
+rsa = { version = "0.9", features = ["pem"] }
+schemars = "1.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tower = { version = "0.5", features = ["util"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

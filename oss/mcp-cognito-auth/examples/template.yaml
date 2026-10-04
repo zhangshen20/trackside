@@ -1,0 +1,164 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  The mcp-cognito-auth example: an MCP server on an arm64 Lambda behind an API Gateway HTTP API,
+  with a Cognito user pool as its OAuth 2.1 authorization server. A service client
+  (client_credentials) may discover the tools; a user client (authorization code + PKCE) may
+  call them for a signed-in user.
+
+Parameters:
+  CodeBucket:
+    Type: String
+    Description: Bucket holding the Lambda zip.
+  CodeKey:
+    Type: String
+    Description: Key of the Lambda zip (a `bootstrap` binary built for arm64).
+  DomainPrefix:
+    Type: String
+    Description: Prefix for the Cognito hosted domain, unique in the region.
+  CallbackUrls:
+    Type: CommaDelimitedList
+    Default: http://localhost:6274/oauth/callback
+    Description: >-
+      Redirect URIs the user client allows. The default is MCP Inspector's; add your MCP
+      client's (an Alexa+ or Claude connector) here.
+  ResourceServerId:
+    Type: String
+    Default: hello
+    Description: Cognito prefixes custom scopes with this, e.g. hello/mcp:tools.
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${AWS::StackName}-users"
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      AccountRecoverySetting:
+        RecoveryMechanisms: [{ Name: verified_email, Priority: 1 }]
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref UserPool
+      Domain: !Ref DomainPrefix
+
+  ResourceServer:
+    Type: AWS::Cognito::UserPoolResourceServer
+    Properties:
+      UserPoolId: !Ref UserPool
+      Identifier: !Ref ResourceServerId
+      Name: MCP server
+      Scopes:
+        - { ScopeName: "mcp:service", ScopeDescription: "Discover the server's tools" }
+        - { ScopeName: "mcp:tools", ScopeDescription: "Use the tools for the signed-in user" }
+
+  ServiceClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: ResourceServer
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub "${AWS::StackName}-service"
+      GenerateSecret: true
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [client_credentials]
+      AllowedOAuthScopes: [!Sub "${ResourceServerId}/mcp:service"]
+
+  UserClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: ResourceServer
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub "${AWS::StackName}-user"
+      GenerateSecret: true
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - !Sub "${ResourceServerId}/mcp:service"
+        - !Sub "${ResourceServerId}/mcp:tools"
+      CallbackURLs: !Ref CallbackUrls
+      SupportedIdentityProviders: [COGNITO]
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+
+  FunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  Function:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: provided.al2023
+      Architectures: [arm64]
+      Handler: bootstrap
+      MemorySize: 256
+      Timeout: 20
+      Role: !GetAtt FunctionRole.Arn
+      Code:
+        S3Bucket: !Ref CodeBucket
+        S3Key: !Ref CodeKey
+      Environment:
+        Variables:
+          MCP_AUTH_ISSUER: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}"
+          MCP_AUTH_DOMAIN: !Sub "https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com"
+          MCP_AUTH_CLIENTS: !Join [",", [!Ref ServiceClient, !Ref UserClient]]
+          # Clients copy these names from the metadata into their authorization requests, so
+          # they must be Cognito's prefixed names.
+          MCP_AUTH_SCOPE_SERVICE: !Sub "${ResourceServerId}/mcp:service"
+          MCP_AUTH_SCOPE_USER: !Sub "${ResourceServerId}/mcp:tools"
+          RUST_LOG: info
+
+  Api:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "${AWS::StackName}-mcp"
+      ProtocolType: HTTP
+
+  Integration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref Api
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt Function.Arn
+      PayloadFormatVersion: "2.0"
+
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref Api
+      RouteKey: $default
+      Target: !Sub "integrations/${Integration}"
+
+  Stage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref Api
+      StageName: $default
+      AutoDeploy: true
+
+  InvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Function
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*"
+
+Outputs:
+  McpUrl:
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/mcp"
+  UserPoolId:
+    Value: !Ref UserPool
+  ServiceClientId:
+    Value: !Ref ServiceClient
+  UserClientId:
+    Value: !Ref UserClient

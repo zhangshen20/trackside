@@ -22,6 +22,7 @@ deploy/                 CloudFormation stack (Lambda arm64 + API Gateway HTTP AP
 docs/                   testing guide, friction log, product feedback (draft), prior-work statement
 scripts/smoke.sh        protocol smoke test against a running server (see docs/testing.md)
 scripts/token.sh        a Cognito access token for the deployed stack, for the smoke test
+oss/mcp-cognito-auth    open-source spin-off: Cognito OAuth for any Rust MCP server (own workspace, see below)
 ```
 
 ## Run locally
@@ -49,6 +50,8 @@ TRACKSIDE_SIM_TODAY=2026-09-26 cargo run -p trackside-sim   # open http://127.0.
 ## Auth
 
 The deployed server is an OAuth 2.1 resource server in the shape Alexa+ expects: a Cognito user pool issues a client-credentials token for discovery (`trackside/mcp:service`) and an authorization-code + PKCE token for tool calls (`trackside/mcp:tools`). Requests without a token get `401` pointing at `/.well-known/oauth-protected-resource`, and the server publishes `/.well-known/oauth-authorization-server` for Cognito. Each signed-in user gets their own follow list. Locally, auth is off unless `TRACKSIDE_AUTH_ISSUER` is set; see `crates/trackside-mcp/src/auth.rs` and `docs/testing.md`.
+
+The same approach, generalised for any axum or rmcp server, is the standalone crate [`mcp-cognito-auth`](oss/mcp-cognito-auth) (MIT, with its own tests, a Lambda example and a CloudFormation template). It lives here until it moves to its own repository.
 
 ## Deploy to AWS
 
