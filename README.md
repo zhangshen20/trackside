@@ -14,7 +14,7 @@ Ask Alexa+ what racing is on, who is in the Caulfield Cup, how a horse has been 
 ```
 crates/trackside-core   domain model (odds-free) and the Store trait; JSON fixture store
 crates/trackside-ingest parsers for the archived fields, form, results and sectionals, and the snapshot builder (prices and bookmaker names dropped)
-crates/trackside-snapshot  CLI: build a snapshot from the S3 archive (read-only) and publish it to Trackside's bucket
+crates/trackside-snapshot  CLI and scheduled Lambda: build a snapshot from the S3 archive (read-only) and publish it to Trackside's bucket
 crates/trackside-mcp    the MCP server: 9 tools over axum + rmcp; runs locally or on AWS Lambda
 crates/trackside-sim    the simulator: a web page plus a server where Claude on Amazon Bedrock drives the MCP server
 fixtures/demo.json      a small demo fixture (synthetic names) for tests and local runs
@@ -97,6 +97,8 @@ Production data is read, read-only, from an existing daily archive of Racing Aus
 - results: finishing order and riders from the official results, margins, times and the fastest last 600 m from state sectional timing.
 
 Price fluctuations, dividends and pools are never read (the wire types do not declare them), and wagering brands are removed from race and venue names ("Sportsbet Longreach" is Longreach). The snapshot is not committed: the data is licensed for this use, not for redistribution, so the repository only carries the synthetic demo fixture.
+
+On AWS the same binary also runs as a scheduled Lambda (`trackside-refresh`, deployed when `HR_ENV` is set): twice a day, after the evening's results and again early with the day's final fields, it rebuilds the snapshot from a fixed start date to four days ahead, uploads it, and recycles the MCP function so new requests see it. Its role can only read the two archive buckets and write `snapshots/` in Trackside's bucket.
 
 ## Licence
 

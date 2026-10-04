@@ -9,6 +9,12 @@
 //! results and `hr-<HR_ENV>-sectional-<account>` for the sectional canon (override with
 //! `TRACKSIDE_RACING_BUCKET` / `TRACKSIDE_SECTIONAL_BUCKET`). When `TRACKSIDE_ROLE_ARN` is set
 //! every AWS call runs as that role. `--archive-dir` reads a local mirror instead of S3.
+//!
+//! On Lambda (the scheduled daily refresh) it takes no arguments: it rebuilds from
+//! `TRACKSIDE_SNAPSHOT_FROM` to a few days past today in Melbourne (`TRACKSIDE_SNAPSHOT_AHEAD`,
+//! default 4, so upcoming fields are in), uploads to `TRACKSIDE_SNAPSHOT_UPLOAD`, and then
+//! touches the MCP function named by `TRACKSIDE_MCP_FUNCTION` so new instances load the new
+//! snapshot.
 
 use std::io::Write;
 
@@ -149,9 +155,68 @@ async fn archive_bucket(config: &aws_config::SdkConfig, var: &str, kind: &str) -
     Ok(format!("hr-{env}-{kind}-{account}"))
 }
 
+/// The daily refresh's window: a fixed start up to a few days past today in Melbourne.
+fn lambda_args() -> Result<Args> {
+    let from: NaiveDate = std::env::var("TRACKSIDE_SNAPSHOT_FROM")
+        .context("TRACKSIDE_SNAPSHOT_FROM must be set")?
+        .parse()
+        .context("TRACKSIDE_SNAPSHOT_FROM must be YYYY-MM-DD")?;
+    let ahead: u64 = std::env::var("TRACKSIDE_SNAPSHOT_AHEAD")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4);
+    let today = chrono::Utc::now()
+        .with_timezone(&chrono_tz::Australia::Melbourne)
+        .date_naive();
+    Ok(Args {
+        from,
+        to: today + chrono::Days::new(ahead),
+        out: "/tmp/snapshot.json.gz".into(),
+        upload: Some(
+            std::env::var("TRACKSIDE_SNAPSHOT_UPLOAD")
+                .context("TRACKSIDE_SNAPSHOT_UPLOAD must be set")?,
+        ),
+        archive_dir: None,
+    })
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = args()?;
+    if std::env::var("AWS_LAMBDA_RUNTIME_API").is_err() {
+        return build(args()?).await;
+    }
+    lambda_runtime::run(lambda_runtime::service_fn(
+        |_: lambda_runtime::LambdaEvent<serde_json::Value>| async {
+            build(lambda_args()?).await?;
+            if let Ok(function) = std::env::var("TRACKSIDE_MCP_FUNCTION") {
+                touch(&function).await?;
+            }
+            Ok::<_, lambda_runtime::Error>(serde_json::json!({ "ok": true }))
+        },
+    ))
+    .await
+    .map_err(|e| anyhow::anyhow!("lambda runtime: {e}"))
+}
+
+/// A configuration change retires the function's warm instances, so the next request loads
+/// the snapshot just uploaded.
+async fn touch(function: &str) -> Result<()> {
+    let config = aws().await?;
+    aws_sdk_lambda::Client::new(&config)
+        .update_function_configuration()
+        .function_name(function)
+        .description(format!(
+            "Trackside MCP server (snapshot refreshed {})",
+            chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ")
+        ))
+        .send()
+        .await
+        .with_context(|| format!("refreshing {function}"))?;
+    eprintln!("refreshed {function}");
+    Ok(())
+}
+
+async fn build(args: Args) -> Result<()> {
     let dates: Vec<NaiveDate> = args
         .from
         .iter_days()

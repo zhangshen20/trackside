@@ -40,6 +40,21 @@ Parameters:
     Description: >-
       The date (YYYY-MM-DD) the simulator treats as today, for demos on a snapshot of past
       racing. Empty means the real date in Melbourne.
+  RefreshCodeKey:
+    Type: String
+    Default: ""
+    Description: >-
+      Key of the snapshot builder's Lambda zip in ArtifactBucket. With ArchiveEnv set, it
+      rebuilds the snapshot twice a day. Empty leaves the daily refresh out.
+  ArchiveEnv:
+    Type: String
+    Default: ""
+    Description: >-
+      The racing archive's environment (the <env> in hr-<env>-gamble-<account>), read-only.
+  SnapshotFrom:
+    Type: String
+    Default: "2026-09-22"
+    Description: First date (YYYY-MM-DD) the daily refresh puts in the snapshot.
   RateLimit:
     Type: Number
     Default: 10
@@ -74,6 +89,7 @@ Conditions:
   HasDomain: !And [!Not [!Equals [!Ref DomainName, ""]], !Not [!Equals [!Ref CertificateArn, ""]]]
   HasZone: !And [!Condition HasDomain, !Not [!Equals [!Ref HostedZoneId, ""]]]
   HasSim: !Not [!Equals [!Ref SimCodeKey, ""]]
+  HasRefresh: !And [!Not [!Equals [!Ref RefreshCodeKey, ""]], !Not [!Equals [!Ref ArchiveEnv, ""]]]
 
 Resources:
   # OAuth 2.1 for Alexa+: a service client (client_credentials, discovery only) and a user
@@ -412,6 +428,99 @@ Resources:
       AliasTarget:
         DNSName: !GetAtt CustomDomain.RegionalDomainName
         HostedZoneId: !GetAtt CustomDomain.RegionalHostedZoneId
+
+  # Daily refresh: rebuilds the odds-free snapshot from the racing archive (read-only) after
+  # the day's results and again early for the next day's fields, then recycles the MCP
+  # function so it serves the new snapshot.
+  RefreshLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: HasRefresh
+    Properties:
+      LogGroupName: /aws/lambda/trackside-refresh
+      RetentionInDays: 14
+      Tags: [{ Key: Project, Value: trackside }]
+
+  RefreshRole:
+    Type: AWS::IAM::Role
+    Condition: HasRefresh
+    Properties:
+      RoleName: trackside-refresh-lambda
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: trackside-refresh-lambda
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "${RefreshLogGroup.Arn}:*"
+              # The archive is read-only to Trackside.
+              - Effect: Allow
+                Action: [s3:GetObject, s3:ListBucket]
+                Resource:
+                  - !Sub "arn:aws:s3:::hr-${ArchiveEnv}-gamble-${AWS::AccountId}"
+                  - !Sub "arn:aws:s3:::hr-${ArchiveEnv}-gamble-${AWS::AccountId}/*"
+                  - !Sub "arn:aws:s3:::hr-${ArchiveEnv}-sectional-${AWS::AccountId}"
+                  - !Sub "arn:aws:s3:::hr-${ArchiveEnv}-sectional-${AWS::AccountId}/*"
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub "arn:aws:s3:::${ArtifactBucket}/snapshots/*"
+              - Effect: Allow
+                Action: lambda:UpdateFunctionConfiguration
+                Resource: !GetAtt Function.Arn
+      Tags: [{ Key: Project, Value: trackside }]
+
+  RefreshFunction:
+    Type: AWS::Lambda::Function
+    Condition: HasRefresh
+    DependsOn: RefreshLogGroup
+    Properties:
+      FunctionName: trackside-refresh
+      Description: Rebuilds Trackside's racing snapshot from the archive (read-only)
+      Runtime: provided.al2023
+      Architectures: [arm64]
+      Handler: bootstrap
+      MemorySize: 2048
+      Timeout: 900
+      Role: !GetAtt RefreshRole.Arn
+      Code:
+        S3Bucket: !Ref ArtifactBucket
+        S3Key: !Ref RefreshCodeKey
+      Environment:
+        Variables:
+          HR_ENV: !Ref ArchiveEnv
+          TRACKSIDE_SNAPSHOT_FROM: !Ref SnapshotFrom
+          TRACKSIDE_SNAPSHOT_UPLOAD: !Sub "s3://${ArtifactBucket}/${SnapshotKey}"
+          TRACKSIDE_MCP_FUNCTION: !Ref Function
+      Tags: [{ Key: Project, Value: trackside }]
+
+  # 12:00 and 20:00 UTC: about 10 or 11 pm in Melbourne after the day's results, and about 6
+  # or 7 am with the day's final fields.
+  RefreshSchedule:
+    Type: AWS::Events::Rule
+    Condition: HasRefresh
+    Properties:
+      Name: trackside-refresh
+      Description: Rebuild Trackside's racing snapshot twice a day
+      ScheduleExpression: cron(0 12,20 * * ? *)
+      State: ENABLED
+      Targets:
+        - Id: refresh
+          Arn: !GetAtt RefreshFunction.Arn
+
+  RefreshInvokePermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasRefresh
+    Properties:
+      FunctionName: !Ref RefreshFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt RefreshSchedule.Arn
 
 Outputs:
   McpUrl:
