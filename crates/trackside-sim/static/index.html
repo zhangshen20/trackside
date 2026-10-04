@@ -189,7 +189,7 @@
       return `<h2>Race ${esc(c.race_number)}: ${esc(c.name)}</h2>
         <div class="sub">${[c.grade || c.class, c.distance_m && c.distance_m + " m", c.start_local && "Jumps " + c.start_local + (s.jump && s.jump.home_time ? " (" + s.jump.home_time + " " + (s.jump.home_state || "your time") + ")" : "")].filter(Boolean).map(esc).join(" · ")}</div>
         <table><thead><tr><th>No.</th><th>Horse</th><th class="num">Bar.</th><th class="num">Wt</th><th>Jockey</th><th>Trainer</th><th>Form</th></tr></thead><tbody>
-        ${c.runners.map((r) => `<tr class="${r.scratched ? "scratched" : ""}"><td>${esc(r.number)}</td><td>${esc(r.horse)}</td><td class="num">${esc(r.barrier)}</td><td class="num">${esc(r.weight_kg)}</td><td>${esc(r.jockey)}</td><td>${esc(r.trainer)}</td><td>${esc(r.last10)}</td></tr>`).join("")}
+        ${c.runners.map((r) => `<tr class="${r.scratched ? "scratched" : ""}"><td>${esc(r.number)}</td><td>${esc(r.horse)}${(s.following || []).some((h) => String(h).replace(/[^a-z0-9]/gi, "").toLowerCase() === String(r.horse).replace(/[^a-z0-9]/gi, "").toLowerCase()) ? ' <span class="badge">Following</span>' : ""}</td><td class="num">${esc(r.barrier)}</td><td class="num">${esc(r.weight_kg)}</td><td>${esc(r.jockey)}</td><td>${esc(r.trainer)}</td><td>${esc(r.last10)}</td></tr>`).join("")}
         </tbody></table>`;
     },
     race_result(s) {

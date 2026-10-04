@@ -489,11 +489,15 @@ impl Trackside {
             } else {
                 format!("I don't have any meetings on {day} yet. Fields are published two to three days ahead.")
             };
-            return Ok(answer(spoken, json!({ "date": date, "meetings": [] })));
+            return Ok(answer(
+                spoken,
+                json!({ "date": date, "meetings": [], "following": [] }),
+            ));
         }
         // A listener with a home state hears its meetings in full and the rest by name, and
         // start times in their own clock when it differs from the venue's.
-        let home_state = self.profile(&ctx).await.home_state;
+        let profile = self.profile(&ctx).await;
+        let home_state = profile.home_state.clone();
         let home = match args.state {
             Some(_) => None,
             None => home_state.clone(),
@@ -529,12 +533,85 @@ impl Trackside {
             };
             spoken.push_str(&format!(" Elsewhere: {named}{more}."));
         }
+        // The listener's own horses that day, each with its race and start in their clock.
+        let following = followed_in(
+            &profile,
+            meetings
+                .iter()
+                .flat_map(|m| &m.races)
+                .flat_map(|r| &r.runners)
+                .map(|x| x.horse.as_str()),
+        );
+        let past = date < self.today();
+        let mut running: Vec<(Vec<String>, String)> = Vec::new();
+        let mut scratched: Vec<String> = Vec::new();
+        for m in &meetings {
+            for r in &m.races {
+                let entered = |want_scratched: bool| -> Vec<String> {
+                    following
+                        .iter()
+                        .filter(|h| {
+                            r.runners.iter().any(|x| {
+                                x.scratched == want_scratched && horse_key(&x.horse) == horse_key(h)
+                            })
+                        })
+                        .cloned()
+                        .collect()
+                };
+                let race = format!("race {} at {}", r.race_number, m.venue);
+                for h in entered(true) {
+                    scratched.push(format!("{h} from {race}"));
+                }
+                let horses = entered(false);
+                if horses.is_empty() {
+                    continue;
+                }
+                let at = self
+                    .start(m.date, &r.start_local, &m.state, home_state.as_deref())
+                    .short()
+                    .map(|t| format!(" at {t}"))
+                    .unwrap_or_default();
+                running.push((horses, format!("{race}{at}")));
+            }
+        }
+        let mut yours = match running.as_slice() {
+            [] => String::new(),
+            [(horses, race)] => match horses.as_slice() {
+                [one] => format!(
+                    " Your horse {one} {} in {race}.",
+                    if past { "ran" } else { "runs" }
+                ),
+                many => format!(
+                    " Your horses {} {} in {race}.",
+                    spoken_list(many),
+                    if past { "ran" } else { "run" }
+                ),
+            },
+            many => format!(
+                " Your horses {}: {}.",
+                if past { "ran" } else { "are running" },
+                spoken_list(
+                    &many
+                        .iter()
+                        .map(|(horses, race)| format!("{} in {race}", spoken_list(horses)))
+                        .collect::<Vec<_>>()
+                )
+            ),
+        };
+        match scratched.as_slice() {
+            [] => {}
+            [one] => yours.push_str(&format!(" Your horse {one} has been scratched.")),
+            many => yours.push_str(&format!(
+                " Your horses {} have been scratched.",
+                spoken_list(many)
+            )),
+        }
         Ok(answer(
             format!(
-                "According to {SOURCE_RACING_AUSTRALIA}, on {}: {spoken}",
+                "According to {SOURCE_RACING_AUSTRALIA}, on {}: {spoken}{yours}",
                 date.format("%A %-d %B")
             ),
-            json!({ "date": date, "source": SOURCE_RACING_AUSTRALIA, "home_state": home_state, "meetings": meetings.iter().map(|m| json!({
+            json!({ "date": date, "source": SOURCE_RACING_AUSTRALIA, "home_state": home_state, "following": following, "meetings": meetings.iter().map(|m| json!({
                 "venue": m.venue, "state": m.state, "track_condition": m.track_condition, "rail": m.rail,
                 "races": m.races.iter().map(|r| json!({
                     "race_number": r.race_number, "name": r.name, "start_local": r.start_local,
@@ -550,7 +627,7 @@ impl Trackside {
         annotations(read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false),
         input_schema = portable::<RaceArgs>(),
         meta = app_meta(),
-        description = "The race card for one race: name, distance, class, prize and the full field with barriers, jockeys, trainers and weights. A race can be asked for by name (race), or by venue and race number. Use for 'who is running in the Caulfield Cup' or 'who is running in race 8 at Caulfield'."
+        description = "The race card for one race: name, distance, class, prize and the full field with barriers, jockeys, trainers and weights. Names the listener's followed horses when they are in the field. A race can be asked for by name (race), or by venue and race number. Use for 'who is running in the Caulfield Cup' or 'who is running in race 8 at Caulfield'."
     )]
     async fn get_race_card(
         &self,
@@ -594,7 +671,8 @@ impl Trackside {
             .find(|m| venue_matches(&m.venue, &venue))
             .map(|m| m.state)
             .unwrap_or_default();
-        let home = self.profile(&ctx).await.home_state;
+        let profile = self.profile(&ctx).await;
+        let home = profile.home_state.clone();
         let start = self.start(date, &card.start_local, &venue_state, home.as_deref());
         let jump = match start.long() {
             Some(at) => format!(", jumping at {at}{}", start.relative()),
@@ -632,6 +710,9 @@ impl Trackside {
         spoken.push_str(&format!(
             " The field: {field}. Source: {SOURCE_RACING_AUSTRALIA}."
         ));
+        // The listener's own horses in the field, last, so the card reads as it always has.
+        let following = followed_in(&profile, card.runners.iter().map(|r| r.horse.as_str()));
+        spoken.push_str(&your_runners(&card, &following));
         // Where each runner usually settles, for screens to draw a map of the field.
         let styles: serde_json::Map<String, serde_json::Value> = self
             .run_styles(&card)
@@ -641,7 +722,7 @@ impl Trackside {
             .collect();
         Ok(answer(
             spoken,
-            json!({ "found": true, "date": date, "venue": venue, "source": SOURCE_RACING_AUSTRALIA, "card": card, "jump": start.json(), "run_styles": styles }),
+            json!({ "found": true, "date": date, "venue": venue, "source": SOURCE_RACING_AUSTRALIA, "card": card, "jump": start.json(), "run_styles": styles, "following": following }),
         ))
     }
 
@@ -654,6 +735,7 @@ impl Trackside {
     )]
     async fn horse_form(
         &self,
+        ctx: RequestContext<RoleServer>,
         Parameters(args): Parameters<HorseArgs>,
     ) -> Result<CallToolResult, McpError> {
         let (form, heard_as) = match self.find_horse(&args.horse).await? {
@@ -744,16 +826,18 @@ impl Trackside {
             .as_ref()
             .map(|st| format!(" In its races it {}.", st.phrase))
             .unwrap_or_default();
+        let following = !followed_in(&self.profile(&ctx).await, [form.horse.as_str()]).is_empty();
         let spoken = format!(
-            "{}{}, trained by {}. Career {}.{first_up}{going}{habit}{recent} Source: {SOURCE_RACING_AUSTRALIA}.",
+            "{}{}, trained by {}. Career {}.{first_up}{going}{habit}{recent} Source: {SOURCE_RACING_AUSTRALIA}.{}",
             heard_note(&heard_as, &form.horse),
             form.horse,
             form.trainer,
-            form.career.summary()
+            form.career.summary(),
+            if following { " You're following it." } else { "" }
         );
         Ok(answer(
             spoken,
-            json!({ "found": true, "source": SOURCE_RACING_AUSTRALIA, "heard_as": heard_as, "form": form, "run_style": style }),
+            json!({ "found": true, "source": SOURCE_RACING_AUSTRALIA, "heard_as": heard_as, "form": form, "run_style": style, "following": following }),
         ))
     }
 
@@ -766,6 +850,7 @@ impl Trackside {
     )]
     async fn explain_race(
         &self,
+        ctx: RequestContext<RoleServer>,
         Parameters(args): Parameters<RaceArgs>,
     ) -> Result<CallToolResult, McpError> {
         let RaceAt {
@@ -864,10 +949,18 @@ impl Trackside {
                 }
             },
         };
-        let spoken = format!("{note}{explanation} Source: {SOURCE_RACING_AUSTRALIA}.");
+        // The listener's own horses are said after the explanation and never reach the model.
+        let following = followed_in(
+            &self.profile(&ctx).await,
+            card.runners.iter().map(|r| r.horse.as_str()),
+        );
+        let spoken = format!(
+            "{note}{explanation} Source: {SOURCE_RACING_AUSTRALIA}.{}",
+            your_runners(&card, &following)
+        );
         Ok(answer(
             spoken,
-            json!({ "found": true, "race": title, "why": why, "strongest_recent_form": formed.iter().map(|r| r.horse.clone()).collect::<Vec<_>>(), "explanation": explanation, "written_by": written_by, "facts": facts, "source": SOURCE_RACING_AUSTRALIA }),
+            json!({ "found": true, "race": title, "why": why, "strongest_recent_form": formed.iter().map(|r| r.horse.clone()).collect::<Vec<_>>(), "explanation": explanation, "written_by": written_by, "facts": facts, "source": SOURCE_RACING_AUSTRALIA, "following": following }),
         ))
     }
 
@@ -880,6 +973,7 @@ impl Trackside {
     )]
     async fn race_result(
         &self,
+        ctx: RequestContext<RoleServer>,
         Parameters(args): Parameters<RaceArgs>,
     ) -> Result<CallToolResult, McpError> {
         let RaceAt {
@@ -924,6 +1018,9 @@ impl Trackside {
         // How the race was run: each runner's position at the 800 (from its form line, once
         // Racing Australia publishes it) and last 600 m (sectional timing).
         let mut run = Vec::new();
+        // Each finisher's lengths from the winner, from its form line (a result's own margin
+        // may be to the horse in front, so it is used only for the runner-up).
+        let mut from_winner = Vec::new();
         for p in result.placings.iter().filter(|p| p.position >= 1) {
             let start = self
                 .store
@@ -931,6 +1028,12 @@ impl Trackside {
                 .await
                 .map_err(internal)?
                 .and_then(|f| f.starts.into_iter().find(|s| s.date == result.date));
+            from_winner.push(
+                start
+                    .as_ref()
+                    .and_then(|s| s.margin_lengths)
+                    .or(p.margin_lengths.filter(|_| p.position == 2)),
+            );
             run.push(RunLine {
                 position: p.position,
                 horse: p.horse.clone(),
@@ -941,8 +1044,21 @@ impl Trackside {
             });
         }
         let story = how_it_was_run(&run, result.fastest_last_600.as_ref());
+        let following = followed_in(
+            &self.profile(&ctx).await,
+            result.placings.iter().map(|p| p.horse.as_str()),
+        );
+        let yours: Vec<(String, u32, Option<f64>, Option<u32>)> = following
+            .iter()
+            .filter_map(|h| {
+                let i = run
+                    .iter()
+                    .position(|r| horse_key(&r.horse) == horse_key(h))?;
+                Some((h.clone(), run[i].position, from_winner[i], run[i].pos_800))
+            })
+            .collect();
         let spoken = format!(
-            "{note}Race {} at {} on {}: {placings}.{} Time {}.{story} Source: {SOURCE_RACING_AUSTRALIA}.",
+            "{note}Race {} at {} on {}: {placings}.{} Time {}.{story} Source: {SOURCE_RACING_AUSTRALIA}.{}",
             result.race_number,
             result.venue,
             date.format("%-d %B"),
@@ -954,11 +1070,12 @@ impl Trackside {
             result
                 .winning_time
                 .clone()
-                .unwrap_or_else(|| "not recorded".into())
+                .unwrap_or_else(|| "not recorded".into()),
+            your_finishers(&yours)
         );
         Ok(answer(
             spoken,
-            json!({ "found": true, "source": [SOURCE_RACING_AUSTRALIA, SOURCE_SECTIONALS], "result": result, "run": run }),
+            json!({ "found": true, "source": [SOURCE_RACING_AUSTRALIA, SOURCE_SECTIONALS], "result": result, "run": run, "following": following }),
         ))
     }
 
@@ -3211,5 +3328,121 @@ impl Trackside {
             })
             .collect();
         did_you_mean_with(heard, &options)
+    }
+}
+
+/// The horses among `names` that the listener follows, spelt as their stable spells them and
+/// in the order they were followed. Empty without a stable.
+fn followed_in<'a>(profile: &Profile, names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let keys: Vec<String> = names.into_iter().map(horse_key).collect();
+    profile
+        .horses
+        .iter()
+        .filter(|h| keys.contains(&horse_key(h)))
+        .cloned()
+        .collect()
+}
+
+/// " Your horse Sample Stayer is in it, barrier 4, with J. Example up." for the followed
+/// horses in a field, then which of them have been scratched; empty when none are in it.
+fn your_runners(card: &RaceCard, following: &[String]) -> String {
+    let mut running = Vec::new();
+    let mut scratched = Vec::new();
+    for h in following {
+        match card
+            .runners
+            .iter()
+            .find(|r| horse_key(&r.horse) == horse_key(h))
+        {
+            Some(r) if r.scratched => scratched.push(h.clone()),
+            Some(r) => running.push((h.clone(), r)),
+            None => {}
+        }
+    }
+    let details = |r: &trackside_core::Runner, joiner: &str| {
+        let mut parts = Vec::new();
+        if let Some(b) = r.barrier {
+            parts.push(format!("barrier {b}"));
+        }
+        if !r.jockey.trim().is_empty() {
+            parts.push(format!("with {} up", r.jockey.trim()));
+        }
+        parts.join(joiner)
+    };
+    let mut out = match running.as_slice() {
+        [] => String::new(),
+        [(h, r)] => match details(r, ", ") {
+            d if d.is_empty() => format!(" Your horse {h} is in it."),
+            d => format!(" Your horse {h} is in it, {d}."),
+        },
+        many => {
+            let names: Vec<String> = many.iter().map(|(h, _)| h.clone()).collect();
+            let each: Vec<String> = many
+                .iter()
+                .map(|(h, r)| match details(r, " ") {
+                    d if d.is_empty() => h.clone(),
+                    d => format!("{h} from {d}"),
+                })
+                .collect();
+            format!(
+                " Your horses {} are in it, {}.",
+                spoken_list(&names),
+                spoken_list(&each)
+            )
+        }
+    };
+    match scratched.as_slice() {
+        [] => {}
+        [one] => out.push_str(&format!(" Your horse {one} has been scratched.")),
+        many => out.push_str(&format!(
+            " Your horses {} have been scratched.",
+            spoken_list(many)
+        )),
+    }
+    out
+}
+
+/// How the listener's horses finished: " Your horse Demo Miler ran 2nd, 0.8 lengths from the
+/// winner, and came from 9th at the 800." Each entry is (name in the stable, finishing
+/// position, lengths from the winner, position at the 800). Empty when none ran.
+fn your_finishers(yours: &[(String, u32, Option<f64>, Option<u32>)]) -> String {
+    let clause = |position: u32, margin: Option<f64>, at_800: Option<u32>| {
+        let mut words = if position == 1 {
+            "won it".to_string()
+        } else {
+            format!("ran {position}{}", ordinal(position))
+        };
+        if let Some(m) = margin.filter(|_| position > 1) {
+            words.push_str(&format!(", {m:.1} lengths from the winner"));
+        }
+        match at_800.filter(|&p| p > 0) {
+            Some(1) => words.push_str(", and led at the 800"),
+            Some(p) if p > position => words.push_str(&format!(
+                ", and came from {} at the 800",
+                trackside_core::ordinal(p)
+            )),
+            Some(p) => words.push_str(&format!(
+                ", and was {} at the 800",
+                trackside_core::ordinal(p)
+            )),
+            None => {}
+        }
+        words
+    };
+    match yours {
+        [] => String::new(),
+        [(h, position, margin, at_800)] => {
+            format!(" Your horse {h} {}.", clause(*position, *margin, *at_800))
+        }
+        many => {
+            let names: Vec<String> = many.iter().map(|(h, ..)| h.clone()).collect();
+            let each: String = many
+                .iter()
+                .map(|(h, position, margin, at_800)| {
+                    format!(" {h} {}.", clause(*position, *margin, *at_800))
+                })
+                .collect();
+            format!(" Your horses {} were in it.{each}", spoken_list(&names))
+        }
     }
 }

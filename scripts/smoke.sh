@@ -131,6 +131,19 @@ if [[ -n "$FIXTURE" ]]; then
   check "my_stable names the next run" "$(call my_stable '{"date":"2026-10-14"}')" \
     "$answered and 'runs on Saturday in the Caulfield Cup' in text and r['result']['structuredContent']['upcoming'][0]['race_number'] == 8"
 fi
+# Your stable in every answer (servers since that change): $HORSE is followed above, so cards
+# and explanations say which followed horses are in the field. The fixture's Caulfield Cup has it.
+if grep -q "followed horses when they are in the field" <<<"$TOOLS"; then
+  if [[ -n "$FIXTURE" ]]; then
+    check "race card names the listener's horse" "$(call get_race_card "{\"venue\":\"$VENUE\",\"race_number\":$RACE,\"date\":\"$DATE\"}")" \
+      "$answered and 'Your horse' in text and 'Sample Stayer' in r['result']['structuredContent']['following']"
+  else
+    check "race card lists followed horses" "$(call get_race_card "{\"venue\":\"$VENUE\",\"race_number\":$RACE,\"date\":\"$DATE\"}")" \
+      "$answered and 'following' in r['result']['structuredContent']"
+  fi
+  check "explain_race lists followed horses" "$(call explain_race "{\"venue\":\"$VENUE\",\"race_number\":$RACE,\"date\":\"$DATE\"}")" \
+    "$answered and 'following' in r['result']['structuredContent']"
+fi
 # Listener memory (servers since the memory change): unfollowing what was just followed.
 if grep -q '"unfollow_horse"' <<<"$TOOLS"; then
   check "unfollow_horse" "$(call unfollow_horse "{\"horse\":\"$HORSE\"}")" \
