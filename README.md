@@ -146,6 +146,29 @@ Every hour the same function runs a health probe (`trackside-snapshot --probe` r
 
 CloudWatch alarms fire if the refresh or the probe fails, the probe stops running, the MCP function errors, or the API returns 5xx. Set `ALERT_EMAIL` when you run `deploy/deploy.sh` to have the alarms emailed, through an SNS topic.
 
+## Performance and operations
+
+Every tool call writes one CloudWatch Embedded Metric Format line to the function's log, which CloudWatch turns into metrics in the `Trackside` namespace with no agent and no extra API call (`crates/trackside-mcp/src/telemetry.rs`). Each line has the tool and its outcome (found, not found, did you mean, error) as dimensions, and the call's latency. When `explain_race` asks Bedrock it adds Bedrock's answer time, and, when the answer falls back to the template, `BedrockFallback` with the reason (timeout, error or a rejected answer). Each process adds one line at start-up with how long the snapshot took to load. A line carries the Lambda request id so it can be found in the log, and never the listener's account, a token, a horse's name or anything else a listener said. Locally, `TRACKSIDE_METRICS=1` prints the same lines. The hourly probe adds the snapshot's age in hours.
+
+Internal errors never reach the listener as error text: a store, S3 or DynamoDB failure is heard as "Trackside couldn't read its data just now; try again in a moment.", and the detail goes to the log with the request id. `/healthz` answers `{"ok":true,"snapshot_date":...,"meetings":N,"uptime_s":...}`.
+
+The stack's `trackside` CloudWatch dashboard (the `DashboardUrl` output) shows Lambda duration p50 and p99, cold starts with their Init Duration, the snapshot load time, calls by tool and by outcome, latency by tool, Lambda errors and throttles, API Gateway requests, 4xx and 5xx, Bedrock fallbacks and answer time, the snapshot's age and the alarms. Beside the four alarms above, a fifth, `trackside-bedrock-fallback-rate`, fires when more than half of `explain_race`'s Bedrock answers in 15 minutes fall back to the template.
+
+`scripts/perf.sh` measures what a client sees: the first request, then warm calls to each read-only tool, with p50 and p95 per tool. These are local figures, a debug build serving `fixtures/demo.json` on a 4-core x86_64 container, measured with `scripts/perf.sh --fixture -n 50`:
+
+| Measure | Figure |
+| --- | --- |
+| Local binary, process start to first answer (`initialize`) | 25 ms |
+| Local, warm p50: `list_meetings` | 2.7 ms |
+| Local, warm p50: `get_race_card` | 2.9 ms |
+| Local, warm p50: `explain_race` (template, no Bedrock) | 2.7 ms |
+| Local, warm p50: `race_result` | 3.1 ms |
+| Local, warm p50: `horse_form` | 3.0 ms |
+| Local, warm p50: `jockey_or_trainer_stats` | 3.0 ms |
+| Local, warm p50: `carnival_guide` | 2.7 ms |
+| Local, warm p50: `my_stable` | 2.6 ms |
+| Lambda cold start (ap-southeast-2, arm64) | run `scripts/perf.sh` against the deployed URL |
+
 ## Licence
 
 MIT. See `LICENSE`.

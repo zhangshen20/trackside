@@ -145,6 +145,24 @@ check "horse_form reads cleanly" "$(call horse_form "{\"horse\":\"$HORSE\"}")" \
 check "follow_horse refuses an unknown horse" "$(call follow_horse '{"horse":"Not A Real Horse Zzq"}')" \
   'r["result"]["structuredContent"]["found"] is False'
 
+# Telemetry: /healthz reports what is served as JSON (servers since the telemetry change; the
+# fixture server always does), and a warm race card answers well inside a voice turn.
+health=$(curl -sS --max-time 10 "${MCP_URL%/mcp}/healthz")
+if [[ -n "$FIXTURE" || "$health" == "{"* ]]; then
+  check "healthz returns JSON with ok true" "$health" \
+    'r.get("ok") is True and isinstance(r.get("meetings"), int) and "snapshot_date" in r and "uptime_s" in r'
+fi
+call get_race_card "{\"venue\":\"$VENUE\",\"race_number\":$RACE,\"date\":\"$DATE\"}" >/dev/null
+warm=$(curl -sS -o /dev/null -w '%{time_total}' --max-time 30 "$MCP_URL" ${AUTH[@]+"${AUTH[@]}"} \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
+  -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_race_card\",\"arguments\":{\"venue\":\"$VENUE\",\"race_number\":$RACE,\"date\":\"$DATE\"}}}")
+if python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 3 else 1)' "${warm:-99}"; then
+  PASS=$((PASS + 1)); echo "ok    warm get_race_card in ${warm}s"
+else
+  FAIL=$((FAIL + 1)); echo "FAIL  warm get_race_card took ${warm:-?}s (limit 3s)"
+fi
+
 # Error paths.
 check "unknown tool is an error" "$(call place_bet '{}')" '"error" in r or r["result"].get("isError")'
 check "missing argument is a tool error" "$(call get_race_card "{\"venue\":\"$VENUE\"}")" '"error" in r or r["result"].get("isError")'

@@ -1372,3 +1372,283 @@ fn start_times_are_said_the_way_a_person_says_them() {
         assert_eq!(crate::tools::spoken_time(written), said, "{written}");
     }
 }
+
+// ---- telemetry ----
+
+/// The demo app with metric lines going to `sink`, serving `store`.
+fn app_metered(
+    store: Arc<dyn trackside_core::Store>,
+    sink: Arc<crate::telemetry::InMemory>,
+    snapshot: crate::telemetry::SnapshotInfo,
+) -> axum::Router {
+    metered(store, Arc::new(InMemory::default()), sink, snapshot)
+}
+
+/// The same, remembering listeners in `memory`.
+fn app_metered_with(
+    store: Arc<dyn trackside_core::Store>,
+    memory: Arc<dyn Memory>,
+    sink: Arc<crate::telemetry::InMemory>,
+) -> axum::Router {
+    metered(store, memory, sink, Default::default())
+}
+
+fn metered(
+    store: Arc<dyn trackside_core::Store>,
+    memory: Arc<dyn Memory>,
+    sink: Arc<crate::telemetry::InMemory>,
+    snapshot: crate::telemetry::SnapshotInfo,
+) -> axum::Router {
+    crate::build_app_with(
+        store,
+        memory,
+        None,
+        Arc::new(FixedClock(TEST_NOW.parse().unwrap())),
+        None,
+        true,
+        true,
+        Default::default(),
+        crate::Ops {
+            metrics: Some(sink),
+            snapshot,
+            started: std::time::Instant::now(),
+        },
+    )
+}
+
+/// A tool call sent as Lambda delivers it, with the invocation's context in the request.
+async fn send_on_lambda(app: &axum::Router, body: Value, request_id: &str) -> Value {
+    let mut context = lambda_http::Context::default();
+    context.request_id = request_id.into();
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/mcp")
+        .header(header::HOST, "abc.execute-api.ap-southeast-2.amazonaws.com")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ACCEPT, "application/json, text/event-stream")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    req.extensions_mut().insert(context);
+    let res = app.clone().oneshot(req).await.unwrap();
+    let bytes = to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+fn emf_lines(sink: &crate::telemetry::InMemory) -> Vec<Value> {
+    sink.lines()
+        .iter()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn each_tool_call_writes_one_emf_line_with_its_outcome() {
+    let sink = Arc::new(crate::telemetry::InMemory::default());
+    let app = app_metered(Arc::new(demo_store()), sink.clone(), Default::default());
+
+    send_on_lambda(
+        &app,
+        call("horse_form", json!({"horse": "Sample Stayer"})),
+        "req-found",
+    )
+    .await;
+    send_on_lambda(
+        &app,
+        call("horse_form", json!({"horse": "Phar Lap"})),
+        "req-missing",
+    )
+    .await;
+    send_on_lambda(
+        &app,
+        call("place_bet", json!({"horse": "Phar Lap"})),
+        "req-x",
+    )
+    .await;
+
+    let lines = emf_lines(&sink);
+    assert_eq!(lines.len(), 3, "{:?}", sink.lines());
+    let outcomes: Vec<_> = lines
+        .iter()
+        .map(|l| {
+            (
+                l["Tool"].as_str().unwrap(),
+                l["Outcome"].as_str().unwrap(),
+                l["RequestId"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            ("horse_form", "found", "req-found"),
+            ("horse_form", "not_found", "req-missing"),
+            // A tool the server doesn't have is never a dimension value.
+            ("unknown", "error", "req-x"),
+        ]
+    );
+    for (raw, line) in sink.lines().iter().zip(&lines) {
+        let cw = &line["_aws"]["CloudWatchMetrics"][0];
+        assert_eq!(cw["Namespace"], "Trackside");
+        assert_eq!(cw["Dimensions"], json!([["Tool", "Outcome"]]));
+        assert!(line["LatencyMs"].is_number(), "{raw}");
+        assert_eq!(line["Calls"], 1.0);
+        assert!(line["_aws"]["Timestamp"].is_i64());
+        // Nothing the listener said, and nobody's identity.
+        let lower = raw.to_lowercase();
+        for leak in [
+            "sample stayer",
+            "phar lap",
+            "place_bet",
+            "\"sub\"",
+            "local",
+            "bearer",
+        ] {
+            assert!(!lower.contains(leak), "{leak} in {raw}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn healthz_reports_the_snapshot_and_writes_no_metric() {
+    let sink = Arc::new(crate::telemetry::InMemory::default());
+    let fixture: Fixture = serde_json::from_slice(
+        &std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/demo.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let info = crate::telemetry::SnapshotInfo::of(&fixture);
+    let app = app_metered(Arc::new(demo_store()), sink.clone(), info);
+    let (status, _, v) = send(&app, "GET", "/healthz", None, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["snapshot_date"], "2026-10-17");
+    assert_eq!(v["meetings"], fixture.meetings.len());
+    assert!(v["uptime_s"].is_u64(), "{v}");
+    assert!(sink.lines().is_empty(), "{:?}", sink.lines());
+}
+
+/// A store whose every read fails the way S3 and DynamoDB do, with names in the message.
+struct FailingStore;
+
+const STORE_ERROR: &str = "reading s3://bucket/key: DynamoDB ResourceNotFoundException";
+
+#[async_trait::async_trait]
+impl trackside_core::Store for FailingStore {
+    async fn meetings(&self, _: chrono::NaiveDate) -> anyhow::Result<Vec<trackside_core::Meeting>> {
+        anyhow::bail!(STORE_ERROR)
+    }
+    async fn race_card(
+        &self,
+        _: chrono::NaiveDate,
+        _: &str,
+        _: u32,
+    ) -> anyhow::Result<Option<RaceCard>> {
+        anyhow::bail!(STORE_ERROR)
+    }
+    async fn horse_form(&self, _: &str) -> anyhow::Result<Option<trackside_core::HorseForm>> {
+        anyhow::bail!(STORE_ERROR)
+    }
+    async fn race_result(
+        &self,
+        _: chrono::NaiveDate,
+        _: &str,
+        _: u32,
+    ) -> anyhow::Result<Option<trackside_core::RaceResult>> {
+        anyhow::bail!(STORE_ERROR)
+    }
+    async fn person_stats(
+        &self,
+        _: &str,
+        _: &str,
+        _: Option<chrono::NaiveDate>,
+        _: Option<chrono::NaiveDate>,
+    ) -> anyhow::Result<Option<trackside_core::PersonStats>> {
+        anyhow::bail!(STORE_ERROR)
+    }
+}
+
+/// Listener memory that fails the way DynamoDB does.
+struct FailingMemory;
+
+#[async_trait::async_trait]
+impl Memory for FailingMemory {
+    async fn load(&self, _: &str) -> anyhow::Result<Profile> {
+        anyhow::bail!(STORE_ERROR)
+    }
+    async fn save(&self, _: &str, _: &Profile) -> anyhow::Result<()> {
+        anyhow::bail!(STORE_ERROR)
+    }
+    async fn forget(&self, _: &str) -> anyhow::Result<()> {
+        anyhow::bail!(STORE_ERROR)
+    }
+    fn durable(&self) -> bool {
+        true
+    }
+}
+
+#[tokio::test]
+async fn a_failing_store_is_heard_as_one_plain_sentence() {
+    let sink = Arc::new(crate::telemetry::InMemory::default());
+    let app = app_metered(Arc::new(FailingStore), sink.clone(), Default::default());
+    let tools = [
+        ("list_meetings", json!({"date": "2026-10-17"})),
+        ("horse_form", json!({"horse": "Sample Stayer"})),
+        (
+            "jockey_or_trainer_stats",
+            json!({"name": "J. Example", "role": "jockey"}),
+        ),
+        (
+            "get_race_card",
+            json!({"venue": "Caulfield", "race_number": 8, "date": "2026-10-17"}),
+        ),
+        (
+            "explain_race",
+            json!({"venue": "Caulfield", "race_number": 8, "date": "2026-10-17"}),
+        ),
+    ];
+    let memory_app = app_metered_with(
+        Arc::new(demo_store()),
+        Arc::new(FailingMemory),
+        sink.clone(),
+    );
+    let calls = tools
+        .iter()
+        .map(|(tool, args)| (&app, *tool, args.clone()))
+        .chain([
+            (&memory_app, "my_stable", json!({})),
+            (
+                &memory_app,
+                "follow_horse",
+                json!({"horse": "Sample Stayer"}),
+            ),
+            (&memory_app, "forget_me", json!({})),
+        ])
+        .collect::<Vec<_>>();
+    for (app, tool, args) in &calls {
+        let v = send_on_lambda(app, call(tool, args.clone()), "req-fail").await;
+        let raw = v.to_string();
+        let said = v["error"]["message"]
+            .as_str()
+            .or(v["result"]["content"][0]["text"].as_str())
+            .unwrap_or_default();
+        assert_eq!(said, crate::tools::INTERNAL_SPOKEN, "{tool}: {raw}");
+        for leak in [
+            "s3://",
+            "Dynamo",
+            "bucket/key",
+            "ResourceNotFound",
+            STORE_ERROR,
+        ] {
+            assert!(!raw.contains(leak), "{tool} leaked {leak}: {raw}");
+        }
+        assert!(!said.contains('/'), "{said}");
+        // Still JSON-RPC's internal error.
+        assert_eq!(v["error"]["code"], -32603, "{raw}");
+    }
+    let lines = emf_lines(&sink);
+    assert_eq!(lines.len(), calls.len());
+    assert!(lines.iter().all(|l| l["Outcome"] == "error"), "{lines:?}");
+}

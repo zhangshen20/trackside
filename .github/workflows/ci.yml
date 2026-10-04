@@ -25,6 +25,30 @@ jobs:
         run: |
           bash scripts/check-docs.sh
           python3 scripts/check-aws-doc.py
+      - name: Parse the CloudFormation template and its dashboard body
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || pip install pyyaml
+          python3 - <<'PY'
+          import json, re, yaml
+          class Loader(yaml.SafeLoader):
+              pass
+          def tag(loader, suffix, node):  # !Sub, !Ref, !If ... kept as plain values
+              if isinstance(node, yaml.ScalarNode):
+                  return loader.construct_scalar(node)
+              if isinstance(node, yaml.SequenceNode):
+                  return loader.construct_sequence(node, deep=True)
+              return loader.construct_mapping(node, deep=True)
+          Loader.add_multi_constructor("!", tag)
+          template = yaml.load(open("deploy/trackside.yaml"), Loader=Loader)
+          boards = [r for r in template["Resources"].values() if r["Type"] == "AWS::CloudWatch::Dashboard"]
+          assert boards, "no AWS::CloudWatch::Dashboard in the template"
+          for board in boards:
+              body = board["Properties"]["DashboardBody"]
+              body = body[0] if isinstance(body, list) else body
+              widgets = json.loads(re.sub(r"\$\{[^}]*\}", "x", body))["widgets"]
+              assert widgets and all("type" in w and "properties" in w for w in widgets)
+              print(f"{board['Properties']['DashboardName']}: {len(widgets)} widgets")
+          PY
 
   # The server as a client sees it: a debug build serves fixtures/demo.json the way Lambda runs
   # (stateless, plain JSON), with its clock fixed on the Wednesday before the fixture's Caulfield
