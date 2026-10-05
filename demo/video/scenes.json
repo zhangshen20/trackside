@@ -42,13 +42,13 @@
       "type": "card",
       "card": "later",
       "caption": false,
-      "narration": "Days later, in a new conversation."
+      "narration": "One day later, in a new conversation."
     },
     {
       "id": "06-stable",
       "type": "sim",
       "reload": true,
-      "memory": "last-checked:2026-09-20",
+      "memory": "last-checked:2026-10-04",
       "ask": "How's my stable?",
       "expect": "since you last|Tamworth",
       "narration_after": "Trackside keeps that memory in DynamoDB against each listener's account, so days later it opens with what you missed. Say 'forget me' and it's gone."
