@@ -2210,6 +2210,13 @@ async fn a_carnival_race_without_fields_answers_from_the_guide() {
         "{}",
         spoken(&v)
     );
+    // A name heard by sound says how it was taken before the guide's answer.
+    let v = ask(&app, "explain_race", json!({"race": "Cocks Plate"})).await;
+    assert!(
+        spoken(&v).starts_with("Taking Cocks Plate as the Cox Plate. The Cox Plate is on Saturday 24 October at Moonee Valley;"),
+        "{}",
+        spoken(&v)
+    );
     // A feature already run that this store holds no field for.
     let v = ask(&app, "race_result", json!({"race": "Caulfield Guineas"})).await;
     assert_eq!(

@@ -3240,8 +3240,18 @@ impl Trackside {
                     note,
                 }))
             }
-            RaceCandidate::Carnival(f, _) => {
-                Ok(RaceLookup::Reply(self.carnival_answer(heard, f, tool)))
+            RaceCandidate::Carnival(f, m) => {
+                // The guide's answer names the venue and day itself, so a name heard by
+                // sound only needs saying how it was taken.
+                let reply = self.carnival_answer(heard, f, tool);
+                Ok(RaceLookup::Reply(if m.is_exact() {
+                    reply
+                } else {
+                    with_note(
+                        &format!("Taking {} as {}. ", heard.trim(), with_article(f.name)),
+                        reply,
+                    )
+                }))
             }
         }
     }
