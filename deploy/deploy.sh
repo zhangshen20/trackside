@@ -125,8 +125,11 @@ aws cloudformation deploy --stack-name "$STACK" --template-file deploy/trackside
 # A new snapshot with unchanged code needs fresh instances to pick it up.
 FN="$(aws cloudformation describe-stacks --stack-name "$STACK" \
   --query "Stacks[0].Outputs[?OutputKey=='FunctionName'].OutputValue" --output text)"
+# The commit goes in the description so "what's live" can be read from AWS.
+REV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+git diff --quiet HEAD 2>/dev/null || REV="$REV-dirty"
 aws lambda update-function-configuration --function-name "$FN" \
-  --description "Trackside MCP server (deployed $(date -u +%FT%TZ))" >/dev/null
+  --description "Trackside MCP server (deployed $(date -u +%FT%TZ) from $REV)" >/dev/null
 
 aws cloudformation describe-stacks --stack-name "$STACK" \
   --query "Stacks[0].Outputs[?OutputKey=='McpUrl' || OutputKey=='SimUrl'].OutputValue" --output text
