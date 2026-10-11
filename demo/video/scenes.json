@@ -17,7 +17,7 @@
       "id": "02b-what",
       "type": "card",
       "card": "what",
-      "narration": "Twelve MCP tools that Alexa Plus calls over Streamable HTTP, behind OAuth 2.1. Real Racing Australia fields, results and sectional times, refreshed twice a day. And memory: the horses you follow, your home state, when you last checked, plus a race card it draws itself as an MCP App."
+      "narration": "Thirteen MCP tools that Alexa Plus calls over Streamable HTTP, behind OAuth 2.1. Real Racing Australia fields, results and sectional times, refreshed twice a day. And memory: the horses you follow, your home state, when you last checked, plus a race card it draws itself as an MCP App."
     },
     {
       "id": "07-arch",
