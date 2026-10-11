@@ -119,5 +119,13 @@ Not yet covered: MCP Apps visuals.
 
 - `cargo test -p trackside-sim` covers the conversation loop (with a scripted model), the MCP client, PKCE and the cookies.
 - Locally: run the MCP server stateless on port 8000, then `TRACKSIDE_SIM_TODAY=2026-09-26 cargo run -p trackside-sim` and open `http://127.0.0.1:8001/sim`. Without Cognito settings it runs in local mode with no sign-in.
-- Deployed: open `https://mcp.racingaidataset.com.au/sim`, choose **Link account**, sign in, and ask the questions from section 2. Each answer should show a card, and the tool-call panel should list the MCP calls. Set `TRACKSIDE_SIM_TODAY` at deploy time to a date inside the snapshot so "today" and "Saturday" land on real racing.
+- Deployed: open `https://mcp.racingaidataset.com.au/sim`, choose **Link account**, sign in, and ask the questions from section 2. Each answer should show a card, and the tool-call panel should list the MCP calls. Leave `TRACKSIDE_SIM_TODAY` unset: the snapshot rolls forward twice a day, so the real today always has racing. Set it only to rehearse a fixed day.
 - A 502 whose message starts `Bedrock:` is Bedrock refusing the call (model access, quota); the page shows the message.
+
+## 5. Judge test account
+
+Judges sign in as `judge@racingaidataset.com.au`, a confirmed Cognito user in pool `ap-southeast-2_nGSZVZiEu`. It can follow horses and set a home state, and has no AWS access. Its password is kept out of the repo and goes only in the Devpost testing instructions.
+
+- **Simulator:** open `/sim`, choose **Link account**, sign in. Say "I'm in Brisbane", then ask for the Caulfield Cup card: the MCP App card opens and the start time is given in Queensland time and at the track. Follow a horse from the card, then ask "How's my stable?" and "Show me the Caulfield Cup card" again: the answer ends by naming the followed horse.
+- **Inspector or a Claude.ai connector:** client ID is the stack's `UserClientId` output; its secret comes from `aws cognito-idp describe-user-pool-client` and is pasted into Devpost by hand, never committed.
+- Keep the account until judging ends on 20 November, then delete it (`aws cognito-idp admin-delete-user`).
