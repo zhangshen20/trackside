@@ -3,24 +3,42 @@
   "viewport": { "width": 1280, "height": 720 },
   "scale": 1.5,
   "voices": {
-    "narrator": { "polly": "Matthew", "engine": "neural", "rate": "106%", "espeak": "en-us+m3" },
-    "alexa": { "polly": "Olivia", "engine": "neural", "rate": "104%", "espeak": "en-gb+f3" }
+    "narrator": { "polly": "Matthew", "engine": "neural", "rate": "106%", "kokoro": "bm_george", "lang": "en-gb", "speed": 1.04, "espeak": "en-us+m3" },
+    "alexa": { "polly": "Olivia", "engine": "neural", "rate": "104%", "kokoro": "bf_emma", "lang": "en-gb", "speed": 1.04, "espeak": "en-gb+f3" }
   },
   "scenes": [
+    {
+      "id": "02-title",
+      "type": "card",
+      "card": "title",
+      "narration": "This is Trackside: an Alexa Plus add-on for Australian horse racing, built as an MCP server. It's the form guide, not the bookmaker: who's running, how a horse is going, who ran home fastest, and never a price."
+    },
+    {
+      "id": "02b-what",
+      "type": "card",
+      "card": "what",
+      "narration": "Thirteen MCP tools that Alexa Plus calls over Streamable HTTP, behind OAuth 2.1. Real Racing Australia fields, results and sectional times, refreshed twice a day. And memory: the horses you follow, your home state, when you last checked, plus a race card it draws itself as an MCP App."
+    },
+    {
+      "id": "07-arch",
+      "type": "card",
+      "card": "arch",
+      "narration": "It all runs on AWS in one CloudFormation stack: Rust on Lambda behind API Gateway, Cognito for sign-in, the data snapshot on S3 built by a second Lambda on an EventBridge schedule, memory in DynamoDB, and Claude on Bedrock playing Alexa Plus in the simulator."
+    },
+    {
+      "id": "02c-use",
+      "type": "card",
+      "card": "use",
+      "narration": "To use it: enable Trackside in the Alexa app and link your account, then just ask. Follow the horses you care about, and next time it tells you what you missed. Here a simulator stands in for Alexa Plus; every answer is the live server's."
+    },
     {
       "id": "01-hook",
       "type": "sim",
       "reload": true,
       "memory": "forget",
-      "narration_before": "Every spring, Australia stops for a horse race, and nearly every racing app wants to sell you a bet.",
+      "narration_before": "Let's start with last Saturday at Flemington.",
       "ask": "Who won race 6 at Flemington on Saturday, and who ran home fastest?",
       "expect": "33\\.58"
-    },
-    {
-      "id": "02-title",
-      "type": "card",
-      "card": "title",
-      "narration": "Trackside is the mate who knows the form: an Alexa Plus add-on, built as an MCP server, that never mentions a price."
     },
     {
       "id": "03-racecard",
@@ -50,14 +68,8 @@
       "reload": true,
       "memory": "last-checked:2026-10-04",
       "ask": "How's my stable?",
-      "expect": "since you last|Tamworth",
-      "narration_after": "Trackside keeps that memory in DynamoDB against each listener's account, so days later it opens with what you missed. Say 'forget me' and it's gone."
-    },
-    {
-      "id": "07-arch",
-      "type": "card",
-      "card": "arch",
-      "narration": "Under the hood: Rust on Lambda behind API Gateway, speaking MCP over Streamable HTTP, with OAuth 2.1 through Cognito, as Alexa Plus requires. Racing Australia results and sectionals become one snapshot on S3, twice a day. Memory sits in DynamoDB, and Claude on Bedrock plays Alexa Plus in the simulator. One CloudFormation stack, open source under MIT."
+      "expect": "since you last|Tamworth|Muswellbrook",
+      "narration_after": "That memory lives in DynamoDB against each listener's account, so Trackside opens with what you missed. Say 'forget me' and it's gone."
     },
     {
       "id": "08-close",
