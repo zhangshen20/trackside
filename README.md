@@ -46,7 +46,7 @@ Built as a self-hosted MCP server for the **Build, Ship, Shape: Amazon Developer
 **Built on AWS**: Lambda (arm64, Rust) behind API Gateway, Cognito OAuth, DynamoDB memory, S3 snapshots refreshed twice a day by EventBridge, CloudWatch metrics, dashboard and alarms, and Bedrock and Polly in the simulator. Every service, IAM boundary and cost: [docs/aws.md](docs/aws.md). Architecture: [docs/architecture.mmd](docs/architecture.mmd).
 
 - Track: Alexa+ (MCP server, Streamable HTTP, MCP spec 2025-11-25)
-- Mini-challenges: AWS Builder, Open Source ([`mcp-cognito-auth`](oss/mcp-cognito-auth), MIT)
+- Mini-challenges: AWS Builder, Open Source ([`mcp-cognito-auth`](https://github.com/zhangshen20/mcp-cognito-auth), MIT)
 
 ## Layout
 
@@ -61,7 +61,7 @@ deploy/                 CloudFormation stack (Lambda arm64 + API Gateway HTTP AP
 docs/                   testing guide, friction log, product feedback (draft), prior-work statement
 scripts/smoke.sh        protocol smoke test against a running server (see docs/testing.md)
 scripts/token.sh        a Cognito access token for the deployed stack, for the smoke test
-oss/mcp-cognito-auth    open-source spin-off: Cognito OAuth for any Rust MCP server (own workspace, see below)
+oss/mcp-cognito-auth    source of the open-source spin-off github.com/zhangshen20/mcp-cognito-auth (own workspace, see below)
 ```
 
 ## Run locally
@@ -90,7 +90,7 @@ TRACKSIDE_SIM_TODAY=2026-09-26 cargo run -p trackside-sim   # open http://127.0.
 
 The deployed server is an OAuth 2.1 resource server in the shape Alexa+ expects: a Cognito user pool issues a client-credentials token for discovery (`trackside/mcp:service`) and an authorization-code + PKCE token for tool calls (`trackside/mcp:tools`). Requests without a token get `401` pointing at `/.well-known/oauth-protected-resource`, and the server publishes `/.well-known/oauth-authorization-server` for Cognito. Each signed-in user gets their own memory (see Memory). Locally, auth is off unless `TRACKSIDE_AUTH_ISSUER` is set; see `crates/trackside-mcp/src/auth.rs` and `docs/testing.md`.
 
-The same approach, generalised for any axum or rmcp server, is the standalone crate [`mcp-cognito-auth`](oss/mcp-cognito-auth) (MIT, with its own tests, a Lambda example and a CloudFormation template). It lives here until it moves to its own repository.
+The same approach, generalised for any axum or rmcp server, is the standalone crate [`mcp-cognito-auth`](https://github.com/zhangshen20/mcp-cognito-auth) (MIT, with its own tests, a Lambda example and a CloudFormation template), published in its own repository. Its source started in [`oss/mcp-cognito-auth`](oss/mcp-cognito-auth).
 
 ## Deploy to AWS
 
