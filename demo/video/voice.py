@@ -5,10 +5,12 @@ answers in "Olivia", the Australian voice the simulator itself uses.
 Reads work/timeline.json (from record.cjs) and scenes.json; writes work/audio/*.wav and
 work/voices.json with each line's duration. Lines whose text hasn't changed are kept.
 
-    voice.py [--engine auto|polly|espeak]
+    voice.py [--engine auto|polly|kokoro|espeak]
 
-"polly" needs polly:SynthesizeSpeech (run under `awsx.py run` for the role); "espeak" is the
-offline placeholder; "auto" (default) tries Polly and falls back to espeak with a warning.
+"polly" needs polly:SynthesizeSpeech (run under `awsx.py run` for the role); "kokoro" is an
+offline neural voice (pip install kokoro-onnx soundfile, model files in $KOKORO_DIR, see
+README); "espeak" is the robotic placeholder; "auto" (default) tries Polly, then Kokoro, then
+espeak with a warning.
 """
 import hashlib
 import json
@@ -84,6 +86,34 @@ def polly(text, voice, out):
     os.remove(mp3)
 
 
+_kokoro = None
+
+
+def kokoro_dir():
+    return os.environ.get("KOKORO_DIR", os.path.join(work, "kokoro"))
+
+
+def kokoro(text, voice, out):
+    """Kokoro-82M through onnxruntime: natural voices, no network, about 2x real time on 4 cores."""
+    global _kokoro
+    if _kokoro is None:
+        from kokoro_onnx import Kokoro
+
+        d = kokoro_dir()
+        _kokoro = Kokoro(os.path.join(d, "kokoro-v1.0.onnx"), os.path.join(d, "voices-v1.0.bin"))
+    import soundfile as sf
+
+    samples, rate = _kokoro.create(text, voice=voice["kokoro"], speed=voice.get("speed", 1.0), lang=voice.get("lang", "en-gb"))
+    sf.write(out + ".raw.wav", samples, rate)
+    to_wav(out + ".raw.wav", out)
+    os.remove(out + ".raw.wav")
+
+
+def kokoro_ready():
+    d = kokoro_dir()
+    return os.path.exists(os.path.join(d, "kokoro-v1.0.onnx")) and os.path.exists(os.path.join(d, "voices-v1.0.bin"))
+
+
 def espeak(text, voice, out):
     subprocess.run(
         ["espeak-ng", "-v", voice["espeak"], "-s", "178", "-p", "45", "-a", "150", "-w", out + ".raw.wav", text],
@@ -109,14 +139,16 @@ def main():
             try:
                 polly(text, voice, out)
                 used = "polly"
-            except Exception as e:  # noqa: BLE001 - any Polly failure means the placeholder voice
+            except Exception as e:  # noqa: BLE001 - any Polly failure means the next voice down
                 if engine == "polly":
                     raise
+                engine = "kokoro" if kokoro_ready() else "espeak"
                 if not warned:
-                    print(f"WARNING: Polly unavailable ({e}); using espeak as a placeholder voice", file=sys.stderr)
+                    print(f"WARNING: Polly unavailable ({e}); using {engine} instead", file=sys.stderr)
                     warned = True
-                engine = "espeak"
-                used = "espeak"
+                used = engine
+        if used == "kokoro":
+            kokoro(text, voice, out)
         if used == "espeak":
             espeak(text, voice, out)
         voices[key] = {"file": out, "seconds": duration(out), "hash": digest, "who": who, "text": text, "engine": used}

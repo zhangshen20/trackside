@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en-AU"><head><meta charset="utf-8"><title>What is in it</title><link rel="stylesheet" href="style.css">
+<style>
+  body { justify-content: flex-start; padding-top: 110px; }
+  h2 { font-size: 84px; }
+  .cols { display: flex; gap: 36px; margin-top: 70px; width: 1760px; }
+  .col { flex: 1; background: var(--panel); border: 2px solid var(--line); border-radius: 28px; padding: 44px 40px; text-align: left; min-height: 480px; }
+  .col.hot { border-color: var(--accent); }
+  .col.mem { border-color: var(--good); }
+  .n { font-size: 26px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
+  .col.mem .n { color: var(--good); }
+  .h { font-size: 46px; font-weight: 700; margin: 14px 0 22px; line-height: 1.15; }
+  .p { font-size: 30px; color: var(--muted); line-height: 1.4; }
+  .p b { color: var(--text); font-weight: 600; }
+</style></head>
+<body>
+  <div class="kicker">What I built</div>
+  <h2>A racing form guide Alexa+ can call</h2>
+  <div class="cols">
+    <div class="col hot">
+      <div class="n">The server</div>
+      <div class="h">An MCP server, in Rust</div>
+      <div class="p"><b>12 tools</b> over Streamable HTTP (MCP 2025-11-25), <b>OAuth 2.1</b> with PKCE, as the Alexa+ track requires. Results, fields, form, sectionals, carnival guide, next race.</div>
+    </div>
+    <div class="col">
+      <div class="n">The data</div>
+      <div class="h">Real Racing Australia data</div>
+      <div class="p">Fields, results and <b>sectional times</b> from a read-only archive, rebuilt into one snapshot <b>twice a day</b>. Prices are never read: <b>no betting, no odds</b>.</div>
+    </div>
+    <div class="col mem">
+      <div class="n">The difference</div>
+      <div class="h">It remembers you</div>
+      <div class="p">Your <b>stable</b> of followed horses, your home state and when you last checked, kept across sessions. On a screen it draws its own <b>race card</b> as an MCP App.</div>
+    </div>
+  </div>
+  <div class="corner">Build, Ship, Shape: Amazon Developer Hackathon 2026 · Alexa+ track</div>
+  <div class="corner-right">github.com/zhangshen20/trackside</div>
+</body></html>
