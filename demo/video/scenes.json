@@ -1,10 +1,29 @@
 {
   "sim_url": "http://127.0.0.1:8001/sim",
-  "viewport": { "width": 1280, "height": 720 },
+  "viewport": {
+    "width": 1280,
+    "height": 720
+  },
   "scale": 1.5,
   "voices": {
-    "narrator": { "polly": "Matthew", "engine": "neural", "rate": "106%", "kokoro": "bm_george", "lang": "en-gb", "speed": 1.04, "espeak": "en-us+m3" },
-    "alexa": { "polly": "Olivia", "engine": "neural", "rate": "104%", "kokoro": "bf_emma", "lang": "en-gb", "speed": 1.04, "espeak": "en-gb+f3" }
+    "narrator": {
+      "polly": "Matthew",
+      "engine": "neural",
+      "rate": "106%",
+      "kokoro": "bm_george",
+      "lang": "en-gb",
+      "speed": 1.04,
+      "espeak": "en-us+m3"
+    },
+    "alexa": {
+      "polly": "Olivia",
+      "engine": "neural",
+      "rate": "104%",
+      "kokoro": "bf_emma",
+      "lang": "en-gb",
+      "speed": 1.04,
+      "espeak": "en-gb+f3"
+    }
   },
   "scenes": [
     {
@@ -36,23 +55,28 @@
       "type": "sim",
       "reload": true,
       "memory": "forget",
-      "narration_before": "Let's start with last Saturday at Flemington.",
-      "ask": "Who won race 6 at Flemington on Saturday, and who ran home fastest?",
-      "expect": "33\\.58"
+      "narration_before": "Let's start with yesterday's Caulfield Cup.",
+      "ask": "Who won the Caulfield Cup, and who ran home fastest?",
+      "expect": "34\\.61"
     },
     {
       "id": "03-racecard",
       "type": "sim",
       "reload": true,
-      "ask": "Show me race 4 at Muswellbrook today.",
-      "expect": "Denman",
+      "ask": "Show me race 7 at Horsham today.",
+      "expect": "Horsham Cup",
       "narration_after": "On screen, Trackside draws its own answers: this race card is an MCP App served by the Trackside server, with a form strip and where the field usually settles.",
-      "then": [ { "tap": "Hellcibell", "say": "Tap a horse, and the App fetches its form through the host." } ]
+      "then": [
+        {
+          "tap": "Miracle Spin (GB)",
+          "say": "Tap a horse, and the App fetches its form through the host."
+        }
+      ]
     },
     {
       "id": "04-follow",
       "type": "sim",
-      "ask": "Follow Hellcibell.",
+      "ask": "Follow Miracle Spin.",
       "expect": "^(?![\\s\\S]*(let you know|notify|alert))[\\s\\S]*follow"
     },
     {
@@ -66,9 +90,9 @@
       "id": "06-stable",
       "type": "sim",
       "reload": true,
-      "memory": "last-checked:2026-10-04",
+      "memory": "last-checked:2026-10-17",
       "ask": "How's my stable?",
-      "expect": "since you last|Tamworth|Muswellbrook",
+      "expect": "since you last",
       "narration_after": "That memory lives in DynamoDB against each listener's account, so Trackside opens with what you missed. Say 'forget me' and it's gone."
     },
     {
