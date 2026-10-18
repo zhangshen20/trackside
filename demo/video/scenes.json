@@ -92,7 +92,7 @@
       "reload": true,
       "memory": "last-checked:2026-10-17",
       "ask": "How's my stable?",
-      "expect": "since you last|Horsham|Miracle Spin",
+      "expect": "since you last",
       "narration_after": "That memory lives in DynamoDB against each listener's account, so Trackside opens with what you missed. Say 'forget me' and it's gone."
     },
     {
